@@ -9,6 +9,9 @@ const paths = {
   terminal: 'M3 5h18v14H3z M6 9l3 3-3 3 M12 15h4',
   refresh: 'M20 7v5h-5 M19 11a7 7 0 1 0-2 6',
   folder: 'M3 6h6l2 2h10v11H3z',
+  user: 'M16 7.5a4 4 0 1 1-8 0 4 4 0 0 1 8 0z M4 20v-1a7 7 0 0 1 7-7h2a7 7 0 0 1 7 7v1',
+  thinking: 'M9 16c0-2-3-3.3-3-7a6 6 0 1 1 12 0c0 3.7-3 5-3 7z M9.5 19h5 M11 22h2',
+  reply: 'M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-6 4V6a2 2 0 0 1 2-2z M7 9h10 M7 13h7',
 } as const
 
 export function Icon({ name }: { name: keyof typeof paths }) {

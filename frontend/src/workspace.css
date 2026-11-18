@@ -14,12 +14,19 @@
 .replay-round-head time { margin-left: auto; }
 .replay-entries { display: grid; gap: 12px; padding: 16px 18px 20px; }
 .replay-entries:empty { padding: 0; }
-.replay-message { padding: 0 12px; border-left: 2px solid #d3dcde; }
-.replay-message h4, .replay-payload h4 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: #4d636c; }
-.replay-user { border-color: #347564; background: #f1f7f4; padding-block: 9px; }
-.replay-user h4 { color: #286653; }
-.replay-thinking { border-color: #b9b0ca; color: #534d60; }
-.replay-thinking h4 { color: #695c79; }
+.replay-message { min-width: 0; padding: 12px 16px; }
+.replay-role { display: flex; align-items: center; gap: 7px; margin: 0 0 6px; font-size: 13px; font-weight: 650; line-height: 1.5; }
+.replay-role svg { flex: none; }
+.replay-user { justify-self: end; max-width: 86%; background: #e9f1fc; color: #1e3553; border: 1px solid #c9dbf1; border-radius: 12px 3px 12px 12px; }
+.replay-user .replay-role { color: #2b5483; }
+.replay-thinking { margin-inline-start: 12px; padding-block: 9px; border-inline-start: 2px dashed #a198b4; background: #f6f4f8; color: #554e60; font-size: 14px; }
+.replay-thinking-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 4px; }
+.replay-thinking .replay-role { color: #615274; margin: 0; }
+.replay-reply { border-inline-start: 4px solid #307763; border-radius: 0 7px 7px 0; color: #1d3630; background: #edf6f1; }
+.replay-reply .replay-role { color: #245e4d; }
+.replay-payload h4 { margin: 0 0 4px; font-size: 12px; font-weight: 600; color: #4d636c; }
+.replay-thinking-body { overflow: clip; line-height: 1.65; }
+.replay-thinking-body[data-expanded="true"] { max-height: min(20rem, 50vh); overflow-y: auto; }
 .replay-prose { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
 .replay-tool { min-width: 0; border: 1px solid var(--border); border-radius: 6px; }
 .replay-tool summary { display: flex; align-items: center; gap: 8px; padding: 7px 12px; list-style: none; cursor: pointer; background: var(--surface-2); font-size: 13px; overflow-wrap: anywhere; }
@@ -120,6 +127,10 @@
   .workspace-rail a { padding: 4px 7px; }
 }
 @media (max-width: 600px) {
+  .replay-entries { padding: 12px; }
+  .replay-message { padding-inline: 11px; }
+  .replay-user { max-width: 95%; }
+  .replay-thinking { margin-inline-start: 5px; }
   .work-metrics > div, .run-metrics > * { padding-inline: 9px; }
   .work-metrics span { display: block; }
   .work-metrics svg { display: none; }

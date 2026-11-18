@@ -144,6 +144,7 @@ try {
     { type: 'user', message: { content: '检查解析器' } },
     { type: 'assistant', message: { content: [
       { type: 'thinking', thinking: '先读取测试文件。' },
+      { type: 'thinking', thinking: Array.from({ length: 80 }, (_, i) => '检查步骤 ' + (i + 1)).join('\n') },
       { type: 'tool_use', id: 'read-1', name: 'Read', input: { path: 'parser.rs' } },
     ] } },
     { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'read-1', content: 'file contents' }] } },
@@ -158,6 +159,34 @@ try {
   const firstRound = page.locator('.replay-round').first()
   await firstRound.getByText('先读取测试文件。', { exact: true }).waitFor()
   await firstRound.getByText('已读完测试文件。', { exact: true }).waitFor()
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 900 })
+    const messages = await firstRound.locator('.replay-message').evaluateAll((sections) => sections.map((section) => ({
+      label: section.querySelector('h4').textContent,
+      background: getComputedStyle(section).backgroundColor,
+      left: section.getBoundingClientRect().left,
+      right: section.getBoundingClientRect().right,
+    })))
+    assert.deepEqual(messages.map((m) => m.label), ['用户输入', '模型思考', '模型思考', '模型回复'])
+    assert.equal(new Set(messages.map((m) => m.background)).size, 3)
+    assert.ok(messages[0].left > messages[1].left && messages[1].left > messages[3].left)
+    assert.ok(messages.every((m) => m.left >= 0 && m.right <= width))
+    if (process.env.WORKBENCH_SHOTS) await firstRound.screenshot({ path: join(process.env.WORKBENCH_SHOTS, 'replay-roles-' + width + '.png') })
+  }
+  const expandThinking = firstRound.getByRole('button', { name: '展开思考内容' })
+  await expandThinking.waitFor()
+  assert.equal(await expandThinking.count(), 1)
+  assert.equal(await expandThinking.getAttribute('aria-expanded'), 'false')
+  const thinkingBody = firstRound.locator('.replay-thinking-body').last()
+  const previewHeight = await thinkingBody.evaluate((el) => el.clientHeight)
+  await expandThinking.click()
+  const region = firstRound.getByRole('region', { name: '模型思考' })
+  assert.ok(await region.evaluate((el, preview) => preview < el.clientHeight && el.clientHeight < el.scrollHeight, previewHeight))
+  await region.press('End')
+  await page.waitForFunction((el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 1, await region.elementHandle())
+  await firstRound.getByRole('button', { name: '收起思考内容' }).click()
+  assert.equal(await thinkingBody.evaluate((el) => el.clientHeight), previewHeight)
+  assert.equal(await thinkingBody.evaluate((el) => el.scrollTop), 0)
   assert.equal(await firstRound.locator('.replay-tool').count(), 0)
   await firstRound.getByRole('button', { name: '查看全部工具调用（12）' }).click()
   assert.equal(await firstRound.locator('.replay-tool').count(), 12)
@@ -171,7 +200,7 @@ try {
   await firstRound.getByText('已读完测试文件。', { exact: true }).waitFor()
   await page.getByLabel('跳转到轮次').selectOption({ label: '第 11 轮 · 继续检查 11' })
   await page.getByRole('heading', { name: '第 11 轮', exact: true }).waitFor()
-  await page.getByLabel('搜索回放').fill('测试文件')
+  await page.getByLabel('搜索回放').fill('检查步骤 80')
   await page.getByRole('heading', { name: '第 1 轮', exact: true }).waitFor()
   assert.equal(await page.locator('.replay-round').count(), 1)
   await page.getByRole('button', { name: '重新导入' }).click()

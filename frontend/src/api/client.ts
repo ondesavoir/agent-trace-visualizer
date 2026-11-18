@@ -2,6 +2,7 @@
 
 import type {
   AgentType,
+  LiveAgent,
   ComparePayload,
   EmbeddedResponse,
   MermaidResponse,
@@ -46,11 +47,11 @@ export const api = {
       `/api/embedded/${encodeURIComponent(sessionId)}?agent_type=${encodeURIComponent(agentType)}`,
     ),
 
-  traces: (root?: string, agent?: 'claude_code' | 'opencode') =>
+  traces: (root?: string, agent?: LiveAgent) =>
     request<TraceEntry[]>(
       `/api/traces?${[
         root ? `root=${encodeURIComponent(root)}` : '',
-        agent === 'opencode' ? 'agent=opencode' : '',
+        agent ? `agent=${agent}` : '',
       ]
         .filter(Boolean)
         .join('&')}`,
@@ -90,14 +91,14 @@ export const api = {
 
   reactflow: () => request<unknown>('/api/workflow/reactflow'),
 
-  traceName: (path: string, agent?: 'claude_code' | 'opencode') =>
+  traceName: (path: string, agent?: LiveAgent) =>
     request<{ name: string | null }>(
-      `/api/trace-name?path=${encodeURIComponent(path)}${agent === 'opencode' ? '&agent=opencode' : ''}`,
+      `/api/trace-name?path=${encodeURIComponent(path)}${agent ? `&agent=${agent}` : ''}`,
     ),
 
   trajectory: () => request<TraceEntry[]>('/api/trajectory'),
 
-  sessionMeta: (path: string, agent?: 'claude_code' | 'opencode') =>
+  sessionMeta: (path: string, agent?: LiveAgent) =>
     request<{
       name: string | null
       active: boolean
@@ -106,11 +107,11 @@ export const api = {
       agentCount: number
       directory: string | null
     }>(
-      `/api/session-meta?path=${encodeURIComponent(path)}${agent === 'opencode' ? '&agent=opencode' : ''}`,
+      `/api/session-meta?path=${encodeURIComponent(path)}${agent ? `&agent=${agent}` : ''}`,
     ),
 
-  liveLatest: (agent?: 'claude_code' | 'opencode') =>
+  liveLatest: (agent?: LiveAgent) =>
     request<{ path: string; mtimeMs: number; active: boolean }>(
-      `/api/live/latest${agent === 'opencode' ? '?agent=opencode' : ''}`,
+      `/api/live/latest${agent ? `?agent=${agent}` : ''}`,
     ),
 }

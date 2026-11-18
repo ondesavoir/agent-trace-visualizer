@@ -18,6 +18,7 @@ type StatusFilter = 'all' | 'active' | 'ended'
 
 const AGENT_LABELS: Record<string, string> = {
   claude_code: 'Claude Code',
+  codeagent: 'CodeAgent',
   opencode: 'Opencode',
   gemini: 'Gemini',
 }
@@ -53,7 +54,7 @@ export default function SessionTable({
   const [sortDir, setSortDir] = useState<'desc' | 'asc'>('desc')
 
   const agentOptions = useMemo(
-    () => [...new Set(traces.map((t) => t.agent).filter((a): a is string => !!a))].sort(),
+    () => [...new Set(traces.map((t) => t.agent).filter((a) => a !== undefined))].sort(),
     [traces],
   )
 
@@ -113,7 +114,8 @@ export default function SessionTable({
       <div className="session-toolbar">
         <input
           type="text"
-          placeholder="🔍 搜索会话名 / 路径 / 目录"
+          aria-label="搜索会话"
+          placeholder="搜索会话名称、路径或目录"
           value={keyword}
           onChange={(e) => {
             setKeyword(e.target.value)
@@ -123,73 +125,29 @@ export default function SessionTable({
         />
         <select
           className="pill-input"
+          aria-label="项目目录"
           value={dirFilter}
           onChange={(e) => {
             setDirFilter(e.target.value)
             setPage(1)
           }}
         >
-          <option value="__all__">📁 全部目录</option>
+          <option value="__all__">全部目录</option>
           {directories.map((d) => (
             <option key={d} value={d}>
               {d.length > 60 ? `…${d.slice(-59)}` : d}
             </option>
           ))}
         </select>
-        {showAgentColumn && agentOptions.length > 0 && (
-          <div className="pills" style={{ margin: 0 }}>
-            <button
-              className={`pill ${agentFilter === '__all__' ? 'pill-active' : ''}`}
-              onClick={() => {
-                setAgentFilter('__all__')
-                setPage(1)
-              }}
-            >
-              全部 Agent
-            </button>
-            {agentOptions.map((a) => (
-              <button
-                key={a}
-                className={`pill ${agentFilter === a ? 'pill-active' : ''}`}
-                onClick={() => {
-                  setAgentFilter(a)
-                  setPage(1)
-                }}
-              >
-                {AGENT_LABELS[a] ?? a}
-              </button>
-            ))}
-          </div>
-        )}
-        <div className="pills" style={{ margin: 0 }}>
-          <button
-            className={`pill ${status === 'all' ? 'pill-active' : ''}`}
-            onClick={() => {
-              setStatus('all')
-              setPage(1)
-            }}
-          >
-            全部
-          </button>
-          <button
-            className={`pill ${status === 'active' ? 'pill-active' : ''}`}
-            onClick={() => {
-              setStatus('active')
-              setPage(1)
-            }}
-          >
-            ● 进行中
-          </button>
-          <button
-            className={`pill ${status === 'ended' ? 'pill-active' : ''}`}
-            onClick={() => {
-              setStatus('ended')
-              setPage(1)
-            }}
-          >
-            已结束
-          </button>
-        </div>
+        {showAgentColumn && <select aria-label="Agent 类型" className="pill-input" value={agentFilter} onChange={(e) => { setAgentFilter(e.target.value); setPage(1) }}>
+          <option value="__all__">全部 Agent</option>
+          {agentOptions.map((a) => <option key={a} value={a}>{AGENT_LABELS[a] ?? a}</option>)}
+        </select>}
+        <select aria-label="活跃状态" className="pill-input" value={status} onChange={(e) => { setStatus(e.target.value as StatusFilter); setPage(1) }}>
+          <option value="all">全部状态</option>
+          <option value="active">最近活跃</option>
+          <option value="ended">近期无更新</option>
+        </select>
       </div>
 
       {filtered.length === 0 ? (
@@ -197,18 +155,14 @@ export default function SessionTable({
       ) : (
         <>
           <div className="table-wrap">
-            <table className="session-table">
+            <table className={`session-table ${showAgentColumn ? 'aggregate-table' : ''}`}>
               <thead>
                 <tr>
                   <th>会话</th>
                   {showAgentColumn && <th>Agent</th>}
                   <th>状态</th>
-                  <th className="session-sortable" onClick={() => toggleSort('mtime')}>
-                    最后活跃时间{sortIndicator('mtime')}
-                  </th>
-                  <th className="session-sortable" onClick={() => toggleSort('duration')}>
-                    持续时间{sortIndicator('duration')}
-                  </th>
+                  <th aria-sort={sortKey === 'mtime' ? (sortDir === 'desc' ? 'descending' : 'ascending') : 'none'}><button className="session-sortable" onClick={() => toggleSort('mtime') }>最后活跃时间{sortIndicator('mtime')}</button></th>
+                  <th aria-sort={sortKey === 'duration' ? (sortDir === 'desc' ? 'descending' : 'ascending') : 'none'}><button className="session-sortable" onClick={() => toggleSort('duration') }>持续时间{sortIndicator('duration')}</button></th>
                   <th>Agent 数量</th>
                   <th>目录</th>
                 </tr>
@@ -265,16 +219,16 @@ function SessionRow({
       title={t.path}
     >
       <td className="session-name">
-        <TraceLabel path={t.path} agent={agent} name={t.name} />
+        <button className="session-open" onClick={(event) => { event.stopPropagation(); onClick() }}><TraceLabel path={t.path} agent={agent} name={t.name} /></button>
       </td>
       {showAgent && (
         <td className="session-agent">{AGENT_LABELS[t.agent ?? agent] ?? (t.agent ?? agent)}</td>
       )}
       <td>
         {active ? (
-          <span className="badge session-live-badge">● 进行中</span>
+          <span className="badge session-live-badge">最近活跃</span>
         ) : (
-          <span className="muted">已结束</span>
+          <span className="muted">近期无更新</span>
         )}
       </td>
       <td className="session-time">{fmtTime(t.mtimeMs)}</td>

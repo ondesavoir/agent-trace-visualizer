@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use regex::Regex;
 use serde_json::{Map, Value, json};
 
-use crate::models::{ParseResult, ResultInfo, SessionInfo, ToolCall, Turn};
+use crate::models::{ParseResult, ResultInfo, SessionInfo, TokenUsagePoint, ToolCall, Turn};
 use crate::tiktoken::count_tokens;
 use crate::util::{is_truthy, load_ndjson, py_str, to_str, ts_delta_ms};
 
@@ -35,11 +35,67 @@ pub fn parse(content: &[u8]) -> ParseResult {
         .take(10)
         .filter(|e| e.get("uuid").is_some() && e.get("timestamp").is_some())
         .count();
-    if transcript_hits >= 3 {
+    let mut result = if transcript_hits >= 3 {
         parse_transcript(&raw_events)
     } else {
         parse_stream_json(&raw_events)
+    };
+    result.token_usage = message_usage(&raw_events);
+    // A stream-json result can cover requests that aren't present in this log.
+    let final_usage = raw_events
+        .iter()
+        .rev()
+        .find(|e| e["type"] == "result")
+        .map(|e| &e["usage"]);
+    let points = &result.token_usage;
+    let stats = &mut result.result_info;
+    let total = |key: &str, field: fn(&TokenUsagePoint) -> Option<u64>| {
+        final_usage
+            .and_then(|u| u[key].as_u64())
+            .unwrap_or_else(|| points.iter().filter_map(field).sum())
+    };
+    stats.total_input = total("input_tokens", |p| p.input);
+    stats.total_output = total("output_tokens", |p| p.output);
+    stats.total_cache_read = total("cache_read_input_tokens", |p| p.cache_read);
+    stats.total_cache_creation = total("cache_creation_input_tokens", |p| p.cache_write);
+    result
+}
+
+fn message_usage(events: &[Value]) -> Vec<TokenUsagePoint> {
+    let mut points: Vec<TokenUsagePoint> = Vec::new();
+    let mut indices = HashMap::new();
+    for event in events.iter().filter(|e| e["type"] == "assistant") {
+        let message = &event["message"];
+        if !message.is_object() || message["model"] == "<synthetic>" {
+            continue;
+        }
+        let id = message["id"].as_str().filter(|id| !id.trim().is_empty());
+        let index = match id {
+            Some(id) => *indices.entry(id).or_insert(points.len()),
+            None => points.len(),
+        };
+        if index == points.len() {
+            points.push(TokenUsagePoint {
+                message_id: id.map(str::to_owned),
+                ..Default::default()
+            });
+        }
+        let point = &mut points[index];
+        point.records += 1;
+        if let Some(model) = message["model"].as_str() {
+            point.model = Some(model.to_owned());
+        }
+        let usage = &message["usage"];
+        point.input = usage["input_tokens"].as_u64().or(point.input);
+        point.output = usage["output_tokens"].as_u64().or(point.output);
+        point.cache_read = usage["cache_read_input_tokens"]
+            .as_u64()
+            .or(point.cache_read);
+        point.cache_write = usage["cache_creation_input_tokens"]
+            .as_u64()
+            .or(point.cache_write);
     }
+    points
 }
 
 /// Tool-map record; a `records` Vec + `index` HashMap preserves Python's
@@ -145,9 +201,8 @@ fn sj_session_info(events: &[Value]) -> SessionInfo {
 }
 
 fn sj_result_info(events: &[Value]) -> ResultInfo {
-    for evt in events {
+    for evt in events.iter().rev() {
         if evt.get("type").and_then(Value::as_str) == Some("result") {
-            let usage = evt.get("usage").cloned().unwrap_or(Value::Null);
             return ResultInfo {
                 duration_ms: evt.get("duration_ms").and_then(Value::as_i64).unwrap_or(0),
                 duration_api_ms: evt
@@ -164,10 +219,7 @@ fn sj_result_info(events: &[Value]) -> ResultInfo {
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
                 result_text: evt.get("result").map(py_str).unwrap_or_default(),
-                total_input: usage["input_tokens"].as_u64().unwrap_or(0),
-                total_output: usage["output_tokens"].as_u64().unwrap_or(0),
-                total_cache_creation: usage["cache_creation_input_tokens"].as_u64().unwrap_or(0),
-                total_cache_read: usage["cache_read_input_tokens"].as_u64().unwrap_or(0),
+                ..Default::default()
             };
         }
     }
@@ -583,12 +635,6 @@ fn parse_transcript(raw_events: &[Value]) -> ParseResult {
         num_turns: turns.len() as u64,
         ..Default::default()
     };
-    if !turns.is_empty() {
-        result_info.total_input = turns.iter().map(|t| t.input_tokens).sum();
-        result_info.total_output = turns.iter().map(|t| t.output_tokens).sum();
-        result_info.total_cache_read = turns.iter().map(|t| t.cache_read).sum();
-        result_info.total_cache_creation = turns.iter().map(|t| t.cache_creation).sum();
-    }
 
     if timestamps.len() >= 2 {
         result_info.duration_ms = ts_delta_ms(

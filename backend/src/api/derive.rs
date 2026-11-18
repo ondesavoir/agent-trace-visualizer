@@ -25,7 +25,7 @@ pub struct ReplayRequest {
 pub async fn replay_handler(Json(req): Json<ReplayRequest>) -> Result<Json<Value>, ApiError> {
     let steps = match req.source.as_str() {
         "opencode" => replay::opencode_to_replay_steps(&req.raw_events),
-        "claude_code" => replay::claude_code_to_replay_steps(&req.raw_events),
+        "claude_code" | "codeagent" => replay::claude_code_to_replay_steps(&req.raw_events),
         other => return Err(ApiError::bad_request(format!("未知的 source：{other}"))),
     };
     Ok(Json(json!({

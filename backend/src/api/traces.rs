@@ -1,7 +1,7 @@
 //! Claude Code transcript listing (browse mode) + per-file session-name
 //! extraction (readable labels for the file pickers instead of raw UUIDs).
 
-use std::io::BufRead;
+use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::path::Path;
 
 use axum::Json;
@@ -16,7 +16,7 @@ pub struct TracesQuery {
     /// Root directory to scan; defaults by agent（~/.claude/projects 或
     /// ~/.local/share/opencode/trace）。
     pub root: Option<String>,
-    /// claude_code（默认）| opencode——决定默认根目录与扩展名过滤。
+    /// claude_code（默认）| codeagent | opencode——决定默认根目录与扩展名过滤。
     pub agent: Option<String>,
 }
 
@@ -36,14 +36,17 @@ pub struct TraceEntry {
     pub duration_ms: Option<u64>,
 }
 
-fn default_root() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    std::path::PathBuf::from(home).join(".claude/projects")
-}
+pub(super) const LOCAL_AGENTS: [&str; 3] = ["claude_code", "codeagent", "opencode"];
 
-fn opencode_root() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    std::path::PathBuf::from(home).join(".local/share/opencode/trace")
+pub(super) fn trace_root(agent: &str) -> std::path::PathBuf {
+    if agent == "opencode" {
+        return super::parse::opencode_trace_dir();
+    }
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .unwrap_or_default();
+    let home = std::path::PathBuf::from(home);
+    home.join(if agent == "codeagent" { ".cac/projects" } else { ".claude/projects" })
 }
 
 /// rglob 一个 trace 目录 → 按 mtime 倒序的条目列表（前 300 个做
@@ -117,13 +120,7 @@ pub async fn traces_handler(
     let root = q
         .root
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            if is_opencode {
-                opencode_root()
-            } else {
-                default_root()
-            }
-        });
+        .unwrap_or_else(|| trace_root(q.agent.as_deref().unwrap_or("claude_code")));
     Ok(Json(list_entries(&root, is_opencode)))
 }
 
@@ -133,19 +130,15 @@ pub async fn traces_handler(
 pub struct TrajectoryEntry {
     #[serde(flatten)]
     pub entry: TraceEntry,
-    /// claude_code | opencode
+    /// claude_code | codeagent | opencode
     pub agent: &'static str,
 }
 
-/// GET /api/trajectory — 聚合当前用户所有本地 agent（claude_code +
-/// opencode）的会话，按最后活跃时间倒序。
+/// Aggregate local sessions across all supported sources, newest first.
 pub async fn trajectory_handler() -> Result<Json<Vec<TrajectoryEntry>>, ApiError> {
     let mut out: Vec<TrajectoryEntry> = Vec::new();
-    for (root, is_oc, agent) in [
-        (default_root(), false, "claude_code"),
-        (opencode_root(), true, "opencode"),
-    ] {
-        for entry in list_entries(&root, is_oc) {
+    for agent in LOCAL_AGENTS {
+        for entry in list_entries(&trace_root(agent), agent == "opencode") {
             out.push(TrajectoryEntry { entry, agent });
         }
     }
@@ -161,7 +154,7 @@ const NAME_MAX: usize = 40;
 #[derive(Deserialize)]
 pub struct TraceNameQuery {
     pub path: String,
-    /// claude_code（默认）| opencode
+    /// claude_code（默认）| codeagent | opencode
     pub agent: Option<String>,
 }
 
@@ -265,7 +258,7 @@ pub async fn trace_name_handler(
 ) -> Result<Json<TraceName>, ApiError> {
     if !crate::api::live::allowed_live_path(&q.path) {
         return Err(ApiError::bad_request(
-            "仅允许提取 ~/.claude/projects 或 opencode trace 目录下文件的会话名",
+            "仅允许提取 已配置的会话目录下文件的会话名",
         ));
     }
     let is_opencode = q.agent.as_deref() == Some("opencode");
@@ -288,7 +281,7 @@ const HEAD_SCAN_CAP: usize = 2 * 1024 * 1024;
 #[derive(Deserialize)]
 pub struct SessionMetaQuery {
     pub path: String,
-    /// claude_code（默认）| opencode
+    /// claude_code（默认）| codeagent | opencode
     pub agent: Option<String>,
 }
 
@@ -453,12 +446,13 @@ fn scan_head(path: &Path, is_opencode: bool, cap: usize, count_agents: bool) -> 
 /// 尾扫描：最后 8KB 内最后一条带时间戳的事件。
 /// 注意用 lossy 解码——8KB 边界可能切在多字节 UTF-8 字符中间。
 fn scan_tail_ts(path: &Path) -> Option<u64> {
-    let Ok(bytes) = std::fs::read(path) else {
-        return None;
-    };
-    let start = bytes.len().saturating_sub(8192);
+    let mut file = std::fs::File::open(path).ok()?;
+    let start = file.metadata().ok()?.len().saturating_sub(8192);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::with_capacity(8192);
+    file.take(8192).read_to_end(&mut bytes).ok()?;
     let mut last: Option<u64> = None;
-    for line in String::from_utf8_lossy(&bytes[start..]).lines() {
+    for line in String::from_utf8_lossy(&bytes).lines() {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) {
             if let Some(ts) = ts_of(&v) {
                 last = Some(ts);
@@ -474,7 +468,7 @@ pub async fn session_meta_handler(
 ) -> Result<Json<SessionMeta>, ApiError> {
     if !crate::api::live::allowed_live_path(&q.path) {
         return Err(ApiError::bad_request(
-            "仅允许提取 ~/.claude/projects 或 opencode trace 目录下文件的会话信息",
+            "仅允许提取 已配置的会话目录下文件的会话信息",
         ));
     }
     let is_opencode = q.agent.as_deref() == Some("opencode");

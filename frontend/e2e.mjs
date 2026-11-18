@@ -44,14 +44,14 @@ await page.screenshot({ path: `${OUT}/1-landing.png`, fullPage: true })
 console.log('1. landing OK')
 
 // ── 2. Opencode standalone: upload → parse → tabs ─────────────
-await page.click('text=Opencode 可视化')
+await page.getByRole('link', {name: 'Opencode', exact: true}).click()
 await page.waitForURL('**/opencode')
 await page.click('text=📁 会话列表') // 默认进入实时监控，需先切到文件模式
 await page.click('text=📤 上传文件分析') // 展开上传区域
 await page.setInputFiles('input[type=file]', `${FIX}/sample_opencode.ndjson`)
 await page.waitForSelector('text=会话回放', { timeout: 15000 })
-await page.waitForSelector('.step-card', { timeout: 15000 })
-const stepCount = await page.locator('.step-card').count()
+await page.waitForSelector('.replay-round', { timeout: 15000 })
+const stepCount = await page.locator('.replay-round').count()
 console.log(`2. opencode upload OK (${stepCount} replay cards)`)
 await page.screenshot({ path: `${OUT}/2-opencode-replay.png`, fullPage: true })
 
@@ -92,7 +92,7 @@ await page.waitForSelector('.wf-panel >> text=done', { timeout: 10000 })
 console.log(`5d. opencode timeline OK (${ocTlRows} rows, ${ocTlTurns} turns, kinds=${ocKinds})`)
 
 // subagent tab: overview with child-trace enrichment + per-subagent details
-await page.click('text=Subagent')
+await page.getByRole('tab', {name: '子代理'}).click()
 await page.waitForSelector('text=Subagent 派发概览（共 2 个）', { timeout: 15000 })
 await page.waitForSelector('text=数据可用', { timeout: 15000 })
 await page.waitForSelector('text=逐个 Subagent 详情', { timeout: 15000 })
@@ -108,7 +108,7 @@ await page.waitForSelector('.js-plotly-plot', { timeout: 20000 })
 console.log('5b. opencode subagent tab OK')
 await page.screenshot({ path: `${OUT}/5b-subagent.png`, fullPage: true })
 
-// token trend tab: all 3 turns must appear (legacy semantics)
+// The trend must use per-step counts.
 await page.click('text=Token 趋势')
 await page.waitForSelector('.js-plotly-plot', { timeout: 20000 })
 const ocTrendPoints = await page.evaluate(() => {
@@ -116,19 +116,10 @@ const ocTrendPoints = await page.evaluate(() => {
   return el?.data?.[0]?.x?.length ?? 0
 })
 if (ocTrendPoints !== 3) throw new Error(`opencode trend should have 3 turn points, got ${ocTrendPoints}`)
-const ocTrend = await page.evaluate(() => {
-  const el = document.querySelectorAll('.js-plotly-plot')[0]
-  return (el?.data ?? []).map((t) => ({ name: t.name, y: t.y }))
-})
-const ocCacheTrace = ocTrend.find((t) => String(t.name).includes('Cache Read'))
-if (!ocCacheTrace) throw new Error(`opencode trend missing Cache Read line: ${ocTrend.map((t) => t.name).join('|')}`)
-// per-step values (300/500/150), NOT the cumsum (300/800/950)
-if (String(ocCacheTrace.y) !== '300,500,150') {
-  throw new Error(`Cache Read must be per-step [300,500,150], got [${ocCacheTrace.y}]`)
-}
-// hit-rate chart renders below the trend
-await page.waitForSelector('text=缓存命中率（Cache Read / 真实上下文窗口）', { timeout: 10000 })
-console.log(`5c. opencode token trend OK (${ocTrendPoints} points, per-step cache ${ocCacheTrace.y})`)
+const ocSeries = await page.locator('.token-trend .js-plotly-plot').evaluateAll((plots) => plots.flatMap((el) => el.data ?? []))
+if (String(ocSeries.find((t) => t.name === '输入')?.y) !== '1000,600,200') throw new Error('opencode per-step input mismatch')
+if (String(ocSeries.find((t) => t.name === '缓存读取')?.y) !== '300,500,150') throw new Error('opencode per-step cache mismatch')
+console.log('5c. opencode per-step usage OK')
 
 // ── 6. Claude Code upload (transcript) ────────────────────────
 await page.goto(`${BASE}/claude-code`)
@@ -136,7 +127,7 @@ await page.click('text=📁 会话列表') // 默认进入实时监控，需先�
 await page.click('text=📤 上传文件分析')
 await page.setInputFiles('input[type=file]', `${FIX}/sample_claude_code_transcript.jsonl`)
 await page.waitForSelector('text=交互会话记录（transcript JSONL）', { timeout: 15000 })
-await page.waitForSelector('.step-card', { timeout: 15000 })
+await page.waitForSelector('.replay-round', { timeout: 15000 })
 console.log('6. claude transcript OK')
 // timeline tab: 三泳道时间线 + 框选过滤 + 列表 + 右侧详情面板
 await page.click('text=时间轴')
@@ -225,7 +216,7 @@ console.log('7d. per-type panel OK (tool Result 归一化 + llm text + user 输�
 await page.screenshot({ path: `${OUT}/7d-waterfall-drawer.png`, fullPage: true })
 
 // subagent tab: dispatch overview + per-call detail expanders
-await page.click('text=🤖 Subagent')
+await page.getByRole('tab', {name: '子代理'}).click()
 await page.waitForSelector('text=Subagent 派发概览（共 1 个）', { timeout: 15000 })
 await page.waitForSelector('text=逐个 Subagent 详情', { timeout: 15000 })
 await page.click('text=Subagent #1:')
@@ -239,23 +230,16 @@ await page.screenshot({ path: `${OUT}/7b-claude-subagent.png`, fullPage: true })
 // token trend tab: 3 distinct input windows must NOT collapse into one turn
 await page.click('text=Token 趋势')
 await page.waitForSelector('.js-plotly-plot', { timeout: 20000 })
-await page.waitForSelector('text=已合并连续相同 input_tokens 的 Turn。原始 3 个 → 合并后 3 个有效数据点。', { timeout: 15000 })
+await page.getByRole('heading', { name: '每次回复的 Token 用量' }).waitFor()
 const ccTrendPoints = await page.evaluate(() => {
   const el = document.querySelectorAll('.js-plotly-plot')[0]
   return el?.data?.[0]?.x?.length ?? 0
 })
 if (ccTrendPoints !== 3) throw new Error(`claude trend should have 3 turn points, got ${ccTrendPoints}`)
-const ccDelta = await page.evaluate(() => {
-  const el = document.querySelectorAll('.js-plotly-plot')[1]
-  return (el?.data ?? []).map((t) => t.name).join('|')
-})
-if (!ccDelta.includes('Input Δ')) throw new Error(`claude delta chart missing: ${ccDelta}`)
+await page.getByRole('heading', { name: '相邻回复的输入变化' }).waitFor()
 console.log(`7c. claude token trend OK (${ccTrendPoints} points)`)
 
-// deepseek-style usage convention (input_tokens EXCLUDES cache reads):
-// the real session transcripts on this machine have cache_read ≫ input.
-// The trend must show the true window (input + cache_read) and the hit
-// rate must never exceed 100%.
+// Equal input without message IDs must remain separate.
 const exclLines = [
   ['u1', 'user', { role: 'user', content: 'go' }, null],
   ['a1', 'assistant', { role: 'assistant', model: 'deepseek-v4-pro', content: [{ type: 'text', text: 'ok' }], stop_reason: 'tool_use' }, { input_tokens: 1000, output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }],
@@ -280,30 +264,23 @@ await page.goto(`${BASE}/claude-code`)
 await page.click('text=📁 会话列表')
 await page.click('text=📤 上传文件分析')
 await page.setInputFiles('input[type=file]', `${OUT}/excludes_cache.jsonl`)
-await page.waitForSelector('text=交互会话记录（transcript JSONL）', { timeout: 15000 })
 await page.click('text=Token 趋势')
 await page.waitForSelector('.js-plotly-plot', { timeout: 20000 })
-await page.waitForSelector('text=原始 4 个 → 合并后 3 个有效数据点', { timeout: 15000 })
-await page.waitForSelector('text=该会话的 input_tokens 不含缓存命中', { timeout: 15000 })
 const exclTrend = await page.evaluate(() => {
   const el = document.querySelectorAll('.js-plotly-plot')[0]
   return { name: el?.data?.[0]?.name, y: el?.data?.[0]?.y }
 })
-// input line shows the RAW json values (merged): [1000, 200, 500]
-if (String(exclTrend.y) !== '1000,200,500') {
+// Each idless record contributes its reported value.
+if (String(exclTrend.y) !== '1000,200,200,500') {
   throw new Error(`excludes-cache input must be raw json values, got: [${exclTrend.y}] (${exclTrend.name})`)
 }
-const exclHit = await page.evaluate(() => {
-  const el = document.querySelectorAll('.js-plotly-plot')[2]
-  return (el?.data?.[0]?.y ?? []).every((v) => v <= 100)
-})
-if (!exclHit) throw new Error('hit rate must never exceed 100%')
-console.log(`7d. claude excludes-cache convention OK (raw input ${exclTrend.y}, hit ≤100%)`)
+if (await page.getByRole('heading', { name: '缓存命中率' }).count()) throw new Error('unknown provider cache ratio shown')
+console.log('7d. idless provider usage OK')
 
 // ── 8. Gemini upload ──────────────────────────────────────────
 await page.goto(`${BASE}/gemini`)
 await page.setInputFiles('input[type=file]', `${FIX}/sample_gemini.log`)
-await page.waitForSelector('text=解析调试面板', { timeout: 15000 })
+await page.getByRole('heading', { name: 'sample_gemini.log' }).waitFor()
 await page.waitForSelector('.js-plotly-plot', { timeout: 20000 })
 console.log('8. gemini debug panel + plot OK')
 await page.screenshot({ path: `${OUT}/8-gemini.png`, fullPage: true })
@@ -311,7 +288,7 @@ await page.screenshot({ path: `${OUT}/8-gemini.png`, fullPage: true })
 // ── 9. Embedded (Ora contract) ────────────────────────────────
 await page.goto(`${BASE}/?session_id=e2e_sess&agent_type=opencode`)
 await page.waitForSelector('text=refactor dashboard', { timeout: 15000 })
-await page.waitForSelector('.step-card', { timeout: 15000 })
+await page.waitForSelector('.replay-round', { timeout: 15000 })
 const hasFilePicker = await page.locator('input[type=file]').count()
 if (hasFilePicker !== 0) throw new Error('embedded view must not show file pickers')
 console.log('9. embedded mode OK (no pickers)')
@@ -416,7 +393,7 @@ await page.fill('.session-search', 'zzz-no-such-session-xyz')
 await page.waitForSelector('text=没有匹配的会话', { timeout: 10000 })
 await page.fill('.session-search', '')
 // 状态过滤：点「已结束」→ 进行中徽章清零
-await page.click('.session-toolbar .pill:has-text("已结束")')
+await page.getByLabel('活跃状态').selectOption('ended')
 await page.waitForTimeout(600)
 const liveBadges = await page.locator('.session-live-badge').count()
 if (liveBadges !== 0) throw new Error(`ended filter should hide active sessions, found ${liveBadges}`)
@@ -426,7 +403,7 @@ await page.waitForFunction(() => {
   const th = [...document.querySelectorAll('.session-sortable')].find((x) => x.textContent.includes('持续时间'))
   return th?.textContent?.includes('▼') ?? false
 }, null, { timeout: 10000 })
-await page.click('.session-toolbar .pill:has-text("全部")')
+await page.getByLabel('活跃状态').selectOption('all')
 rmSync(LIVE_DIR, { recursive: true, force: true })
 console.log('14e. exit live -> session table + toolbar OK + cleanup')
 
@@ -510,14 +487,14 @@ rmSync(OC_LIVE_FILE, { force: true })
 // ── 17. Trajectory 聚合页（跨 agent 会话 + 筛选）────────────────
 await page.goto(`${BASE}/claude-code`)
 await page.waitForSelector('.live-banner', { timeout: 15000 })
-await page.click('text=📊 Trajectory 数据搜集')
-await page.waitForURL('**/trajectory')
+await page.getByRole('link', {name: '← 返回会话工作台'}).click()
+await page.waitForURL(BASE + '/')
 await page.waitForSelector('.session-table', { timeout: 15000 })
 // Agent 列 + agent 过滤 chips
 await page.waitForSelector('.session-table th >> text=Agent', { timeout: 10000 })
-await page.waitForSelector('.session-toolbar .pill:has-text("Claude Code")', { timeout: 10000 })
+await page.getByLabel('Agent 类型').waitFor()
 // 过滤到仅 Opencode → Agent 列只剩 Opencode
-await page.click('.session-toolbar .pill:has-text("Opencode")')
+await page.getByLabel('Agent 类型').selectOption('opencode')
 await page.waitForTimeout(800)
 const agentsShown = await page.evaluate(() => [...new Set([...document.querySelectorAll('.session-row .session-agent')].map((c) => c.textContent))])
 if (agentsShown.length !== 1 || agentsShown[0] !== 'Opencode') {
@@ -525,7 +502,7 @@ if (agentsShown.length !== 1 || agentsShown[0] !== 'Opencode') {
 }
 console.log('17. trajectory aggregate + agent filter OK')
 // 返回上一页 → 回到来源 agent 页面
-await page.click('text=← 返回上一页')
+await page.goBack()
 await page.waitForURL('**/claude-code')
 console.log('17b. trajectory back navigation OK')
 

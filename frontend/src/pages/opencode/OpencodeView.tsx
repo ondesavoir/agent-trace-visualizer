@@ -76,7 +76,7 @@ export default function OpencodeView() {
       <aside className="sidebar">
         {/* 上半部：Live / 会话列表模式切换 + 说明（内容可滚动） */}
         <div className="sidebar-main">
-          <Link className="btn" to="/">← 返回选择页</Link>
+          <Link className="btn" to="/">← 返回会话工作台</Link>
           <hr />
           <h3>Opencode</h3>
           {/* 模式切换：默认实时监控 */}
@@ -107,10 +107,6 @@ export default function OpencodeView() {
             <p className="muted">加载本地 trace 文件进行事后分析，文件选择在主区域。</p>
           )}
           {error && pageMode === 'file' && <ErrorBanner>{String(error)}</ErrorBanner>}
-          <hr />
-          <Link className="btn" style={{ width: '100%', textAlign: 'center' }} to="/trajectory">
-            📊 Trajectory 数据搜集
-          </Link>
         </div>
         {/* 下半部：agent 切换（常驻底部） */}
         <AgentSwitcher />

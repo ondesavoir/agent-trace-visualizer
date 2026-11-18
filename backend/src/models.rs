@@ -91,6 +91,20 @@ pub struct WorkflowNode {
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 #[serde(default)]
+pub struct TokenUsagePoint {
+    pub model: Option<String>,
+    pub input: Option<u64>,
+    pub output: Option<u64>,
+    pub cache_read: Option<u64>,
+    pub cache_write: Option<u64>,
+    pub reasoning: Option<u64>,
+    /// Claude assistant fragments or OpenCode step.finish records represented here.
+    pub records: usize,
+    pub message_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
 pub struct ParseResult {
     /// "opencode" | "gemini" | "claude_code"
     pub source: String,
@@ -98,6 +112,8 @@ pub struct ParseResult {
     pub session_info: SessionInfo,
     pub result_info: ResultInfo,
     pub turns: Vec<Turn>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub token_usage: Vec<TokenUsagePoint>,
     pub tool_calls: Vec<ToolCall>,
 
     pub parse_errors: u64,

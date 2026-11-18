@@ -2,12 +2,14 @@
 // embedded mode.
 
 import { useMemo, useState } from 'react'
-import type { ParseResult } from '../../api/types'
+import type { ParseResult, TraceEntry } from '../../api/types'
 import { useMermaid, useWorkflowTree } from '../../hooks'
 import Plot, { plotColors } from '../../components/Plot'
 import MermaidView from '../../components/MermaidView'
+import TokenTrend from '../../components/TokenTrend'
 import ReplayView from '../../components/ReplayView'
 import RawEventsTab from '../../components/RawEventsTab'
+import SessionHeader, { type CallFilter } from '../../components/SessionHeader'
 import ToolInspector from '../../components/ToolInspector'
 import ToolEfficiencyTable from '../../components/ToolEfficiencyTable'
 import TimelineView from '../../components/TimelineView'
@@ -15,18 +17,17 @@ import { Tabs, DataTable, DebugJson, Expander, Info } from '../../components/ui/
 import {
   fmtTok,
   formatDuration,
-  shapeTurns,
-  mergeConsecutiveTurns,
   buildTimeline,
   grouped,
 } from '../../derive'
 
 export default function ClaudeBody({
   result,
-  embedded = false,
   live = false,
   liveEvents,
   initialTab,
+  entry,
+  fileName,
 }: {
   result: ParseResult
   embedded?: boolean
@@ -36,9 +37,16 @@ export default function ClaudeBody({
   liveEvents?: unknown[]
   /// 初始选中的 tab（实时模式默认落在时间轴）
   initialTab?: string
+  entry?: TraceEntry
+  fileName?: string
 }) {
   const isTranscript = result.parse_debug.format === 'transcript'
   const [tab, setTab] = useState(initialTab ?? 'replay')
+  const [callFilter, setCallFilter] = useState<CallFilter>('all')
+  const inspectCalls = (filter: CallFilter) => {
+    setCallFilter(filter)
+    setTab('calls')
+  }
   const workflowTree = useWorkflowTree(result)
   const mermaid = useMermaid({
     kind: 'sequence-claude',
@@ -50,14 +58,15 @@ export default function ClaudeBody({
 
   const tabs = useMemo(() => {
     const base = [
-      { key: 'replay', label: '📜 会话回放' },
+      { key: 'replay', label: '会话回放' },
+      { key: 'calls', label: '调用明细' },
       { key: 'overview', label: '总览' },
       { key: 'tokens', label: 'Token 趋势' },
     ]
     if (isTranscript) base.push({ key: 'timeline', label: '时间轴' })
     base.push(
       { key: 'tools', label: '工具执行' },
-      { key: 'subagent', label: '🤖 Subagent' },
+      { key: 'subagent', label: '子代理' },
       { key: 'cost', label: '成本分析' },
       { key: 'raw', label: '原始数据' },
     )
@@ -79,13 +88,8 @@ export default function ClaudeBody({
   }, [result])
 
   return (
-    <div className="page">
-      <h2>Claude Code 可视化</h2>
-      <div className="muted" style={{ marginBottom: 6 }}>
-        {isTranscript ? '交互会话记录（transcript JSONL）' : 'stream-json 流式输出'}
-        {result.parse_debug.cwd ? ` · cwd: ${String(result.parse_debug.cwd)}` : ''}
-        {result.parse_debug.version ? ` · v${String(result.parse_debug.version)}` : ''}
-      </div>
+    <div className="session-detail">
+      <SessionHeader result={result} entry={entry} fileName={fileName} onInspect={inspectCalls} />
       <Tabs items={tabs} active={tab} onChange={setTab} />
 
       {tab === 'replay' && (
@@ -101,7 +105,7 @@ export default function ClaudeBody({
         <OverviewTab result={result} overview={overview} mermaidSrc={mermaid.data?.src} />
       )}
 
-      {tab === 'tokens' && <TokensTab result={result} />}
+      {tab === 'tokens' && <TokenTrend result={result} />}
 
       {tab === 'timeline' && isTranscript && (
         <TimelineTab rawEvents={liveEvents ?? result.raw_events} live={live} />
@@ -133,12 +137,7 @@ export default function ClaudeBody({
 
       {tab === 'raw' && <RawEventsTab rawEvents={result.raw_events} keyPrefix="claude" />}
 
-      {!embedded && (
-        <>
-          <hr />
-          <ToolInspector tools={result.tool_calls} />
-        </>
-      )}
+      {tab === 'calls' && <ToolInspector key={callFilter} tools={result.tool_calls} filter={callFilter} onFilter={setCallFilter} />}
     </div>
   )
 }
@@ -159,7 +158,7 @@ function OverviewTab({
     <div>
       <div className="metric-row">
         <div className="metric-card"><div className="m-title">模型</div><div className="m-value" style={{ fontSize: 15 }}>{result.session_info.model || '—'}</div></div>
-        <div className="metric-card"><div className="m-title">轮次</div><div className="m-value">{result.turns.length}</div></div>
+        <div className="metric-card"><div className="m-title">模型回复</div><div className="m-value">{result.token_usage?.length ?? 0}</div></div>
         <div className="metric-card"><div className="m-title">工具调用</div><div className="m-value">{result.tool_calls.length}</div></div>
         <div className="metric-card"><div className="m-title">总 Input</div><div className="m-value">{fmtTok(ri.total_input)}</div></div>
         <div className="metric-card"><div className="m-title">总 Output</div><div className="m-value">{fmtTok(ri.total_output)}</div></div>
@@ -187,118 +186,6 @@ function OverviewTab({
   )
 }
 
-// ── Token trend ───────────────────────────────────────────────
-// Port of legacy claude `_tab_tokens`: merges consecutive turns with the
-// same input_tokens (all formats), plots per-call window sizes without
-// fill-to-zero, compaction deltas (can be negative), cache-hit bars.
-
-function TokensTab({ result }: { result: ParseResult }) {
-  // Legacy merges consecutive same-input turns for EVERY format (stream-json
-  // included), so no transcript gating here.
-  const rawCount = result.turns.length
-  if (rawCount === 0) {
-    return <Info>暂无 Token 数据（未找到 assistant 事件）</Info>
-  }
-  const merged = mergeConsecutiveTurns(result.turns)
-  const rows = shapeTurns(merged, { deltaFillZero: true })
-  const excludesCache = rows.length > 0 && rows[0].excludes_cache
-  const hasCache = merged.some((t) => t.cache_read > 0)
-  const hasCacheCreation = merged.some((t) => t.cache_creation > 0)
-  // Under the excludes-cache convention the cache-read magnitude ≈ the whole
-  // window, so plotting it as a line just duplicates the Input line — the
-  // hit-rate chart carries that information instead.
-  const showCacheLines = !excludesCache
-
-  const trendData: import('plotly.js-basic-dist-min').Data[] = [
-    {
-      type: 'scatter',
-      mode: 'lines+markers',
-      x: rows.map((r) => r.turn_no),
-      y: rows.map((r) => r.input_tokens),
-      name: 'Input Tokens',
-      line: { color: '#1a73e8', width: 2 },
-    },
-    {
-      type: 'scatter',
-      mode: 'lines+markers',
-      x: rows.map((r) => r.turn_no),
-      y: rows.map((r) => r.output_tokens),
-      name: 'Output',
-      line: { color: '#0a9e6a', width: 2 },
-    },
-  ]
-  if (showCacheLines && hasCache) {
-    trendData.push({
-      type: 'scatter',
-      mode: 'lines+markers',
-      x: rows.map((r) => r.turn_no),
-      y: rows.map((r) => r.cache_read),
-      name: 'Cache Read',
-      line: { color: '#14b8a6', width: 2, dash: 'dot' },
-    })
-  }
-  if (showCacheLines && hasCacheCreation) {
-    trendData.push({
-      type: 'scatter',
-      mode: 'lines+markers',
-      x: rows.map((r) => r.turn_no),
-      y: rows.map((r) => r.cache_creation),
-      name: 'Cache Creation',
-      line: { color: '#8b6fbf', width: 2, dash: 'dot' },
-    })
-  }
-
-  return (
-    <div>
-      <p className="muted">
-        已合并连续相同 input_tokens 的 Turn。原始 {rawCount} 个 → 合并后 {merged.length} 个有效数据点。
-      </p>
-      {excludesCache && (
-        <p className="muted">
-          该会话的 input_tokens 不含缓存命中（deepseek 类计费口径），缓存行为请见下方命中率图。
-        </p>
-      )}
-
-      <h3>Input / Output Tokens 趋势</h3>
-      <Plot
-        data={trendData}
-        layout={{ height: 380, margin: { t: 10, b: 40 }, xaxis: { title: 'Turn' }, yaxis: { title: 'Tokens（单次调用）' } }}
-      />
-
-      <hr />
-      <h3>Token 增量（上下文变化量）</h3>
-      <p className="muted">正值 = 上下文增长，负值 = context compaction 压缩释放</p>
-      <Plot
-        data={[
-          { type: 'bar', x: rows.map((_, i) => i), y: rows.map((r) => r.input_delta), name: 'Input Δ', marker: { color: '#1a73e8' } },
-          { type: 'bar', x: rows.map((_, i) => i), y: rows.map((r) => r.output_tokens), name: 'Output', marker: { color: '#0a9e6a' } },
-        ]}
-        layout={{ barmode: 'group', height: 300, margin: { t: 10, b: 40 }, xaxis: { title: '有效数据点' }, yaxis: { title: 'Tokens' } }}
-      />
-
-      {hasCache && (
-        <>
-          <hr />
-          <h3>缓存命中率（Cache Read / 真实上下文窗口）</h3>
-          <Plot
-            data={[
-              {
-                type: 'bar',
-                x: rows.map((_, i) => i),
-                y: rows.map((r) => Math.round(r.cache_hit_rate * 1000) / 10),
-                marker: { color: '#14b8a6' },
-                text: rows.map((r) => `${(r.cache_hit_rate * 100).toFixed(1)}%`),
-                textposition: 'outside',
-              },
-            ]}
-            layout={{ height: 280, margin: { t: 40, b: 40 }, xaxis: { title: '有效数据点' }, yaxis: { title: 'Cache Hit %' }, showlegend: false }}
-          />
-        </>
-      )}
-    </div>
-  )
-}
-
 // ── Subagent tab ──────────────────────────────────────────────
 // Port of legacy claude `_tab_subagents`: dispatch overview + per-call
 // detail expanders (基本信息 / 任务描述 / 输入参数 / 输出内容).
@@ -311,7 +198,7 @@ function SubagentTab({ result }: { result: ParseResult }) {
   if (subagentCalls.length === 0) {
     return (
       <div>
-        <Info>本次会话未派发任何 subagent。（Claude Code 中通过 `task` 工具派发子代理）</Info>
+        <Info>本次会话未派发任何 subagent。（通过 task 工具派发子代理）</Info>
         <p className="muted">
           提示：如果使用了 `claude -p` 模式（stream-json），subagent 调用信息可能不完整。
           建议使用交互会话记录（transcript）模式获取完整数据。
@@ -432,14 +319,14 @@ function CostTab({ result }: { result: ParseResult }) {
         layout={{ height: 260, margin: { t: 20, b: 40 }, yaxis: { title: 'ms' } }}
       />
 
-      <h3>每轮 Token 明细</h3>
+      <h3>模型回复 Token 明细</h3>
       <DataTable
-        rows={result.turns.map((t) => ({
-          'Turn': t.turn_no,
-          'Input': grouped(t.input_tokens),
-          'Output': grouped(t.output_tokens),
-          'Cache Read': grouped(t.cache_read),
-          'Cache Creation': grouped(t.cache_creation),
+        rows={(result.token_usage ?? []).map((t, i) => ({
+          '回复': i + 1,
+          'Input': t.input == null ? '—' : grouped(t.input),
+          'Output': t.output == null ? '—' : grouped(t.output),
+          'Cache Read': t.cache_read == null ? '—' : grouped(t.cache_read),
+          'Cache Creation': t.cache_write == null ? '—' : grouped(t.cache_write),
           '模型': t.model || '—',
         }))}
       />

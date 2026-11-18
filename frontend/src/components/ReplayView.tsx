@@ -1,215 +1,102 @@
-// 会话回放——与时间轴同源的三类信息视图（buildTimeline / buildTimelineOpencode）：
-// 只展示 用户真实输入 / 模型文本输出 / 工具调用+结果（合并为一条），
-// 按轮次分组：用户输入 → 模型响应（含工具调用）→ 工具结果返回 = 一轮。
-// 工作流视图作为子页保留。
-
-import { Fragment, useMemo, useState } from 'react'
-import type { TimelineEvent } from '../derive'
-import { buildTimeline, buildTimelineOpencode, formatDuration, grouped } from '../derive'
-import { Pagination, Info, DebugJson } from './ui/primitives'
+import { useEffect, useId, useMemo, useState } from 'react'
+import type { AgentType, ParseResult, WorkflowNode } from '../api/types'
+import { replayRounds, type ReplayItem, type ReplayRound } from '../replay'
+import { Info, Pagination } from './ui/primitives'
 import WorkflowView from './WorkflowView'
 
-const KIND_META: Record<string, { icon: string; label: string; cls: string }> = {
-  user: { icon: '👤', label: '用户输入', cls: 'rp-user' },
-  llm: { icon: '🤖', label: '模型文本', cls: 'rp-llm' },
-  tool: { icon: '🔧', label: '工具', cls: 'rp-tool' },
+const PAGE_SIZE = 10
+const labels = { user: '用户输入', thinking: '模型思考', reply: '模型回复' }
+const roundTitle = (round: ReplayRound) => round.number ? `第 ${round.number} 轮` : '未记录用户输入的片段'
+const clock = new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+
+function ToolDisclosure({ item }: { item: Extract<ReplayItem, { kind: 'tool' }> }) {
+  const [expanded, setExpanded] = useState(false)
+  return <details className="replay-tool" onToggle={(e) => setExpanded(e.currentTarget.open)}>
+    <summary>
+      <span className="replay-chevron" aria-hidden="true">›</span>
+      <span className="replay-tool-label">工具调用</span><strong>{item.name}</strong>
+      <span className={item.status === '失败' ? 'replay-status failed' : 'replay-status'}>{item.status}</span>
+      {item.duration !== undefined && <small>{item.duration >= 1000 ? (item.duration / 1000).toFixed(1) + ' s' : item.duration + ' ms'}</small>}
+    </summary>
+    {expanded && <div className="replay-payload">
+      <h4>输入参数</h4><pre>{item.input == null ? '未记录输入参数' : typeof item.input === 'string' ? item.input : JSON.stringify(item.input, null, 2)}</pre>
+      <h4>返回结果</h4><pre>{item.output == null ? '未记录返回结果' : item.output || '（空输出）'}</pre>
+    </div>}
+  </details>
 }
 
-const PAGE_SIZE = 50
-
-function formatClock(ms: number): string {
-  const d = new Date(ms)
-  const pad = (n: number, w = 2) => String(n).padStart(w, '0')
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+function Round({ round, id }: { round: ReplayRound; id: string }) {
+  const [showTools, setShowTools] = useState(false)
+  const callCount = round.items.reduce((count, item) => count + Number(item.kind === 'tool'), 0)
+  return <article className="replay-round" id={id} tabIndex={-1}>
+    <header className="replay-round-head">
+      <h3>{roundTitle(round)}</h3>
+      {callCount > 0 && (
+        <button type="button" className="replay-tools-toggle" aria-expanded={showTools} aria-controls={`${id}-entries`} onClick={() => setShowTools(!showTools)}>
+          <span className="replay-chevron" aria-hidden="true">›</span>
+          {showTools ? '收起工具调用' : '查看全部工具调用'}（{callCount}）
+        </button>
+      )}
+      {round.time != null && <time>{clock.format(round.time)}</time>}
+    </header>
+    <div className="replay-entries" id={`${id}-entries`}>
+      {round.items.map((item, i) => item.kind === 'tool'
+        ? showTools && <ToolDisclosure key={i} item={item} />
+        : <section key={i} className={`replay-message replay-${item.kind}`}>
+          <h4>{labels[item.kind]}</h4><div className="replay-prose" dir="auto">{item.text}</div>
+        </section>)}
+    </div>
+  </article>
 }
 
-export default function ReplayView({
-  agent,
-  rawEvents,
-  workflowRoot,
-  result,
-}: {
-  agent: 'claude_code' | 'opencode'
+export default function ReplayView({ agent, rawEvents, workflowRoot, result }: {
+  agent: AgentType
   rawEvents: unknown[]
-  workflowRoot?: import('../api/types').WorkflowNode | null
-  result?: import('../api/types').ParseResult | null
+  workflowRoot?: WorkflowNode | null
+  result?: ParseResult | null
 }) {
-  const [mode, setMode] = useState<'replay' | 'workflow'>('replay')
+  const [workflow, setWorkflow] = useState(false)
   const [keyword, setKeyword] = useState('')
   const [page, setPage] = useState(1)
-
-  const model = useMemo(
-    () => (agent === 'opencode' ? buildTimelineOpencode(rawEvents) : buildTimeline(rawEvents)),
-    [agent, rawEvents],
-  )
-
-  // 注意：filtered 的 useMemo 必须在任何早退 return 之前声明——
-  // 切换工作流视图时早退会跳过其后的 hook，导致
-  // "Rendered fewer hooks than expected"（页面白屏）。
-  const filtered = useMemo(
-    () =>
-      model.events.filter(
-        (e) =>
-          !keyword ||
-          e.name.toLowerCase().includes(keyword.toLowerCase()) ||
-          e.tool_name.toLowerCase().includes(keyword.toLowerCase()),
-      ),
-    [model.events, keyword],
-  )
-
-  const viewSwitch = (
-    <div className="pills" style={{ margin: '6px 0' }}>
-      <button className={`pill ${mode === 'replay' ? 'pill-active' : ''}`} onClick={() => setMode('replay')}>
-        📜 会话回放
-      </button>
-      <button className={`pill ${mode === 'workflow' ? 'pill-active' : ''}`} onClick={() => setMode('workflow')}>
-        🔀 工作流视图
-      </button>
-    </div>
-  )
-
-  if (mode === 'workflow') {
-    return (
-      <div>
-        {viewSwitch}
-        <WorkflowView root={workflowRoot ?? null} result={result ?? null} />
-      </div>
-    )
-  }
-
+  const [jump, setJump] = useState<number | null>(null)
+  const prefix = useId()
+  const rounds = useMemo(() => replayRounds(agent, rawEvents), [agent, rawEvents])
+  const filtered = useMemo(() => {
+    const query = keyword.trim().toLowerCase()
+    return query ? rounds.filter((r) => r.items.some((item) =>
+      (item.kind === 'tool' ? item.name : item.text).toLowerCase().includes(query))) : rounds
+  }, [rounds, keyword])
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const safePage = Math.min(page, totalPages)
   const start = (safePage - 1) * PAGE_SIZE
-  const pageEvents = filtered.slice(start, start + PAGE_SIZE)
-
-  if (model.events.length === 0) {
-    return (
-      <div>
-        {viewSwitch}
-        <Info>暂无会话事件可供回放。</Info>
-      </div>
-    )
-  }
-
-  return (
-    <div>
-      {viewSwitch}
-      <p className="muted">
-        共 {model.events.length} 个事件 · {new Set(model.events.map((e) => e.turn_no)).size} 轮对话 —
-        每轮 = 用户输入 → 模型响应（含工具调用）→ 工具结果返回
-      </p>
-
-      <div className="pills" style={{ margin: '6px 0' }}>
-        <input
-          type="text"
-          placeholder="关键词搜索"
-          value={keyword}
-          onChange={(e) => {
-            setKeyword(e.target.value)
-            setPage(1)
-          }}
-          className="pill-input"
-        />
-      </div>
-
-      <Pagination
-        page={safePage}
-        totalPages={totalPages}
-        total={filtered.length}
-        start={filtered.length === 0 ? 0 : start + 1}
-        end={Math.min(start + PAGE_SIZE, filtered.length)}
-        onPage={setPage}
-      />
-
-      {pageEvents.map((e, i) => {
-        const globalIdx = start + i
-        const prev = globalIdx > 0 ? filtered[globalIdx - 1] : null
-        const isTurnStart = !prev || prev.turn_no !== e.turn_no
-        return (
-          <Fragment key={`${e.turn_no}-${e.ts_ms}-${globalIdx}`}>
-            {isTurnStart && (
-              <div className="rp-turn-sep">
-                ━━━ 第 {e.turn_no} 轮 · {formatClock(e.ts_ms)} ━━━
-              </div>
-            )}
-            <RoundEventCard event={e} />
-          </Fragment>
-        )
-      })}
+  useEffect(() => {
+    if (jump === null) return
+    const target = document.getElementById(`${prefix}-${jump}`)
+    target?.focus({ preventScroll: true })
+    target?.scrollIntoView({ block: 'start' })
+    setJump(null)
+  }, [jump, prefix])
+  return <div className="session-replay">
+    <div className="replay-toolbar">
+      <strong>{rounds.filter((r) => r.number > 0).length} 轮对话</strong>
+      {!workflow && rounds.length > 0 && <>
+        <input type="search" className="pill-input" aria-label="搜索回放" placeholder="搜索对话或工具名" value={keyword}
+          onChange={(e) => { setKeyword(e.target.value); setPage(1) }} />
+        {filtered.length > 1 && <select className="pill-input" aria-label="跳转到轮次" value="" onChange={(e) => {
+          const i = Number(e.target.value)
+          setPage(Math.floor(i / PAGE_SIZE) + 1)
+          setJump(filtered[i].number)
+        }}>
+          <option value="" disabled>跳转到轮次</option>
+          {filtered.map((r, i) => <option key={r.number} value={i}>{roundTitle(r)}{r.items[0]?.kind === 'user' && ' · ' + r.items[0].text.slice(0, 38)}</option>)}
+        </select>}
+      </>}
+      {agent !== 'gemini' && <button className="btn replay-workflow" onClick={() => setWorkflow(!workflow)}>{workflow ? '返回会话回放' : '工作流视图'}</button>}
     </div>
-  )
-}
-
-function RoundEventCard({ event }: { event: TimelineEvent }) {
-  const meta = KIND_META[event.kind] ?? KIND_META.user
-  const usage = (event.detail.usage ?? {}) as Record<string, number>
-  const detail = event.detail as Record<string, unknown>
-
-  const dur =
-    event.duration_ms !== null
-      ? event.duration_ms >= 1000
-        ? `${(event.duration_ms / 1000).toFixed(1)}s`
-        : `${event.duration_ms.toFixed(0)}ms`
-      : null
-
-  return (
-    <details
-      className={`step-card ${meta.cls}`}
-      open
-      style={{ marginLeft: Math.min(event.depth, 8) * 18 }}
-    >
-      <summary>
-        <span className="rp-kind-icon">{meta.icon}</span>
-        <span className="title-text">{event.name.slice(0, 120)}{event.is_error ? ' ❌' : ''}</span>
-        <span className="rp-kind-label">{meta.label}</span>
-        {event.tool_name && <span className="badge">🔧 {event.tool_name}</span>}
-        {dur && <span className="micro-tag">⏱️ {dur}</span>}
-        <span className="fold-toggle">展开 ▼</span>
-      </summary>
-      <div className="step-body">
-        {event.kind === 'user' && (
-          <pre className="debug-json">{typeof detail.text === 'string' ? detail.text : '（空输入）'}</pre>
-        )}
-
-        {event.kind === 'llm' && (
-          <>
-            <pre className="debug-json">
-              {typeof detail.text === 'string' && detail.text ? detail.text : '（无文本输出，仅发起工具调用）'}
-            </pre>
-            <div className="step-meta">
-              {event.detail.model ? `🧩 ${String(event.detail.model)}` : ''}
-              {event.detail.stop_reason ? ` · 停止原因: ${String(event.detail.stop_reason)}` : ''}
-              {usage.input_tokens !== undefined ? ` · 🎯 in=${grouped(Number(usage.input_tokens))}` : ''}
-              {usage.output_tokens !== undefined ? ` out=${grouped(Number(usage.output_tokens))}` : ''}
-            </div>
-          </>
-        )}
-
-        {event.kind === 'tool' && (
-          <>
-            <div className="step-tool-row">
-              <span className="step-tool-name">📥 输入参数</span>
-              {detail.input !== undefined ? (
-                <DebugJson value={detail.input} />
-              ) : (
-                <p className="muted">（无入参）</p>
-              )}
-            </div>
-            <h4>📤 执行结果</h4>
-            {typeof detail.output === 'string' ? (
-              <pre className="debug-json">{detail.output || '（空输出）'}</pre>
-            ) : (
-              <p className="muted">该工具调用没有对应的执行结果。</p>
-            )}
-            {event.status && (
-              <div className="step-meta">
-                {event.is_error ? '❌ ' : '✅ '}状态：{event.status}
-                {event.duration_ms !== null ? ` · 耗时 ${formatDuration(event.duration_ms)}` : ''}
-              </div>
-            )}
-          </>
-        )}
-      </div>
-    </details>
-  )
+    {workflow ? <WorkflowView root={workflowRoot ?? null} result={result ?? null} /> : <>
+      {filtered.length === 0 && <Info>{rounds.length ? '没有匹配的轮次。' : '日志中没有可回放的对话或工具记录。'}</Info>}
+      {filtered.slice(start, start + PAGE_SIZE).map((round) => <Round key={round.number} round={round} id={`${prefix}-${round.number}`} />)}
+      <Pagination page={safePage} totalPages={totalPages} total={filtered.length} start={start + 1} end={Math.min(start + PAGE_SIZE, filtered.length)} onPage={setPage} />
+    </>}
+  </div>
 }

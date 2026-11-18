@@ -3,23 +3,26 @@
 
 import { useMemo, useState } from 'react'
 import { useQueries } from '@tanstack/react-query'
-import type { ParseResult } from '../../api/types'
+import type { ParseResult, TraceEntry } from '../../api/types'
 import { api } from '../../api/client'
 import { useMermaid, useWorkflowTree } from '../../hooks'
 import Plot, { plotColors } from '../../components/Plot'
 import MermaidView from '../../components/MermaidView'
+import TokenTrend from '../../components/TokenTrend'
 import ReplayView from '../../components/ReplayView'
 import RawEventsTab from '../../components/RawEventsTab'
+import SessionHeader, { type CallFilter } from '../../components/SessionHeader'
 import ToolInspector from '../../components/ToolInspector'
 import ToolEfficiencyTable from '../../components/ToolEfficiencyTable'
 import { Tabs, DataTable, Expander, Info } from '../../components/ui/primitives'
 import TimelineView from '../../components/TimelineView'
-import { fmtTok, formatDuration, shapeTurns, shapeTools, grouped, toolSuccessRate, buildTimelineOpencode } from '../../derive'
+import { fmtTok, formatDuration, shapeTools, grouped, toolSuccessRate, buildTimelineOpencode, opencodeInspectedCalls } from '../../derive'
 
 const TABS = [
-  { key: 'replay', label: '📜 会话回放' },
+  { key: 'replay', label: '会话回放' },
+  { key: 'calls', label: '调用明细' },
   { key: 'overview', label: '总览' },
-  { key: 'subagent', label: 'Subagent' },
+  { key: 'subagent', label: '子代理' },
   { key: 'tokens', label: 'Token 趋势' },
   { key: 'timeline', label: '时间轴' },
   { key: 'tools', label: '工具执行与消耗' },
@@ -28,10 +31,11 @@ const TABS = [
 
 export default function OpencodeBody({
   result,
-  embedded = false,
   live = false,
   liveEvents,
   initialTab,
+  entry,
+  fileName,
 }: {
   result: ParseResult
   embedded?: boolean
@@ -41,8 +45,15 @@ export default function OpencodeBody({
   liveEvents?: unknown[]
   /// 初始选中的 tab（实时模式默认落在时间轴）
   initialTab?: string
+  entry?: TraceEntry
+  fileName?: string
 }) {
   const [tab, setTab] = useState(initialTab ?? 'replay')
+  const [callFilter, setCallFilter] = useState<CallFilter>('all')
+  const inspectCalls = (filter: CallFilter) => {
+    setCallFilter(filter)
+    setTab('calls')
+  }
   const workflowTree = useWorkflowTree(result)
   const mermaid = useMermaid({
     kind: 'sequence-opencode',
@@ -52,7 +63,7 @@ export default function OpencodeBody({
   })
 
   const tools = result.tool_calls
-  const turns = result.turns
+  const inspected = useMemo(() => tab === 'calls' ? opencodeInspectedCalls(tools, result.raw_events) : [], [tab, tools, result.raw_events])
 
   const overview = useMemo(() => {
     const eventTypes = new Map<string, number>()
@@ -69,12 +80,8 @@ export default function OpencodeBody({
   }, [result.raw_events, tools])
 
   return (
-    <div className="page">
-      <h2>Opencode 可视化</h2>
-      <p className="muted">
-        {result.session_info.title || result.session_info.model || ''}
-        {result.session_info.session_id ? ` · ${result.session_info.session_id}` : ''}
-      </p>
+    <div className="session-detail">
+      <SessionHeader result={result} entry={entry} fileName={fileName} onInspect={inspectCalls} />
       <Tabs items={TABS} active={tab} onChange={setTab} />
 
       {tab === 'replay' && (
@@ -92,7 +99,7 @@ export default function OpencodeBody({
 
       {tab === 'subagent' && <SubagentTab result={result} />}
 
-      {tab === 'tokens' && <TokensTab turns={turns} />}
+      {tab === 'tokens' && <TokenTrend result={result} />}
 
       {tab === 'timeline' && (
         <OpencodeTimelineTab rawEvents={liveEvents ?? result.raw_events} live={live} />
@@ -102,12 +109,7 @@ export default function OpencodeBody({
 
       {tab === 'raw' && <RawEventsTab rawEvents={result.raw_events} keyPrefix="opencode" />}
 
-      {!embedded && (
-        <>
-          <hr />
-          <ToolInspector tools={tools} />
-        </>
-      )}
+      {tab === 'calls' && <ToolInspector key={callFilter} tools={inspected} filter={callFilter} onFilter={setCallFilter} />}
     </div>
   )
 }
@@ -376,123 +378,6 @@ function SubagentDetail({ view }: { view: SubagentView }) {
 function OpencodeTimelineTab({ rawEvents, live = false }: { rawEvents: unknown[]; live?: boolean }) {
   const model = useMemo(() => buildTimelineOpencode(rawEvents), [rawEvents])
   return <TimelineView model={model} live={live} />
-}
-
-// ── Token trend tab ───────────────────────────────────────────
-// Opencode turns already hold cumulative input/output (cumTokens); cache
-// fields are PER-STEP values. Cache lines are plotted per-step (NOT
-// cumulated — a cumsum of per-step reads grows ~N× the window size and
-// visually dwarfs Input/Output on the shared axis); the cache behavior is
-// additionally shown as a hit-rate chart (same style as the Claude tab).
-// Reasoning keeps the legacy cumulative line.
-
-function TokensTab({ turns }: { turns: ParseResult['turns'] }) {
-  if (turns.length === 0) {
-    return <Info>暂无 Token 数据</Info>
-  }
-  const rows = shapeTurns(turns)
-  const excludesCache = rows.length > 0 && rows[0].excludes_cache
-  const hasCacheRead = turns.some((t) => t.cache_read > 0)
-  const hasCacheCreation = turns.some((t) => t.cache_creation > 0)
-  const hasReasoning = turns.some((t) => t.reasoning_tokens > 0)
-  // Under the excludes-cache convention the per-step cache read ≈ the whole
-  // window and would duplicate the Input line; the hit-rate chart carries it.
-  const showCacheLines = !excludesCache
-
-  const trendData: import('plotly.js-basic-dist-min').Data[] = [
-    {
-      type: 'scatter',
-      mode: 'lines+markers',
-      x: rows.map((r) => r.turn_no),
-      y: rows.map((r) => r.input_tokens),
-      name: 'Input（窗口大小）',
-      line: { color: '#1a73e8', width: 2 },
-      fill: 'tozeroy',
-      fillcolor: 'rgba(26,115,232,0.08)',
-    },
-    {
-      type: 'scatter',
-      mode: 'lines+markers',
-      x: rows.map((r) => r.turn_no),
-      y: rows.map((r) => r.output_tokens),
-      name: 'Output',
-      line: { color: '#0a9e6a', width: 2 },
-    },
-  ]
-  if (showCacheLines && hasCacheRead) {
-    trendData.push({
-      type: 'scatter',
-      mode: 'lines+markers',
-      x: rows.map((r) => r.turn_no),
-      y: rows.map((r) => r.cache_read),
-      name: 'Cache Read（单步）',
-      line: { color: '#14b8a6', width: 2, dash: 'dot' },
-    })
-  }
-  if (showCacheLines && hasCacheCreation) {
-    trendData.push({
-      type: 'scatter',
-      mode: 'lines+markers',
-      x: rows.map((r) => r.turn_no),
-      y: rows.map((r) => r.cache_creation),
-      name: 'Cache Creation（单步）',
-      line: { color: '#8b6fbf', width: 2, dash: 'dot' },
-    })
-  }
-  if (hasReasoning) {
-    trendData.push({
-      type: 'scatter',
-      mode: 'lines+markers',
-      x: rows.map((r) => r.turn_no),
-      y: rows.map((r) => r.reasoning_cum),
-      name: '累计 Reasoning',
-      line: { color: '#8b6fbf', width: 2, dash: 'dot' },
-    })
-  }
-
-  return (
-    <div>
-      <h3>Token 消耗演进趋势</h3>
-      <p className="muted">
-        {excludesCache
-          ? '该会话的 input_tokens 不含缓存命中（deepseek 类计费口径），缓存行为请见下方命中率图。'
-          : 'Cache Read / Cache Creation 为单步值（每步从提示缓存读取的量，与 Input 窗口同量级）。'}
-      </p>
-      <Plot
-        data={trendData}
-        layout={{ height: 380, margin: { t: 10, b: 40 }, xaxis: { title: 'Step' }, yaxis: { title: 'Tokens' } }}
-      />
-      <hr />
-      <h3>每轮 Token 增量（Step 差值）</h3>
-      <Plot
-        data={[
-          { type: 'bar', x: rows.map((r) => r.turn_no), y: rows.map((r) => r.input_delta), name: 'Input 增量', marker: { color: '#1a73e8' } },
-          { type: 'bar', x: rows.map((r) => r.turn_no), y: rows.map((r) => r.output_tokens), name: 'Output', marker: { color: '#0a9e6a' } },
-        ]}
-        layout={{ barmode: 'group', height: 300, margin: { t: 10, b: 40 }, xaxis: { title: 'Step' }, yaxis: { title: 'Tokens' } }}
-      />
-
-      {hasCacheRead && (
-        <>
-          <hr />
-          <h3>缓存命中率（Cache Read / 真实上下文窗口）</h3>
-          <Plot
-            data={[
-              {
-                type: 'bar',
-                x: rows.map((r) => r.turn_no),
-                y: rows.map((r) => Math.round(r.cache_hit_rate * 1000) / 10),
-                marker: { color: '#14b8a6' },
-                text: rows.map((r) => `${(r.cache_hit_rate * 100).toFixed(1)}%`),
-                textposition: 'outside',
-              },
-            ]}
-            layout={{ height: 280, margin: { t: 40, b: 40 }, xaxis: { title: 'Step' }, yaxis: { title: 'Cache Hit %' }, showlegend: false }}
-          />
-        </>
-      )}
-    </div>
-  )
 }
 
 // ── Tools tab ─────────────────────────────────────────────────

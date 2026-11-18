@@ -49,7 +49,7 @@ pub fn build_workflow(result: &ParseResult) -> Option<WorkflowNode> {
     }
     match result.source.as_str() {
         "opencode" => Some(build_opencode(result)),
-        "claude_code" => Some(build_claude_code(result)),
+        "claude_code" | "codeagent" => Some(build_claude_code(result)),
         _ => None,
     }
 }
@@ -108,7 +108,7 @@ fn build_claude_code(result: &ParseResult) -> WorkflowNode {
         } else if !si.model.is_empty() {
             si.model.clone()
         } else {
-            "Claude Code".into()
+            if result.source == "codeagent" { "CodeAgent" } else { "Claude Code" }.into()
         },
         description: "主会话".into(),
         state: if result.result_info.is_error {

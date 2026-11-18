@@ -26,7 +26,7 @@ export default function EmbeddedView({
   switch (data.status) {
     case 'ok':
       if (agentType === 'opencode') return <OpencodeBody result={data.result!} embedded />
-      if (agentType === 'claude_code') return <ClaudeBody result={data.result!} embedded />
+      if (agentType === 'claude_code' || agentType === 'codeagent') return <ClaudeBody result={data.result!} embedded />
       return <ErrorBanner>{data.message ?? `无嵌入渲染器对应 agent_type：${agentType}`}</ErrorBanner>
     case 'locator_missing':
       return (

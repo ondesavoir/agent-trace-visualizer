@@ -10,7 +10,7 @@ use std::collections::{HashMap, VecDeque};
 use regex::Regex;
 use serde_json::{Value, json};
 
-use crate::models::{ParseResult, ResultInfo, SessionInfo, ToolCall, Turn};
+use crate::models::{ParseResult, ResultInfo, SessionInfo, TokenUsagePoint, ToolCall, Turn};
 use crate::tiktoken::count_tokens;
 use crate::util::{load_ndjson, py_str, to_str};
 
@@ -28,6 +28,22 @@ pub fn parse(content: &[u8]) -> ParseResult {
 
     ParseResult {
         source: "opencode".to_string(),
+        token_usage: raw_events
+            .iter()
+            .filter(|e| e["type"] == "step.finish")
+            .map(|e| {
+                let usage = &e["tokens"];
+                TokenUsagePoint {
+                    input: usage["input"].as_u64(),
+                    output: usage["output"].as_u64(),
+                    cache_read: usage["cacheRead"].as_u64(),
+                    cache_write: usage["cacheWrite"].as_u64(),
+                    reasoning: usage["reasoning"].as_u64(),
+                    records: 1,
+                    ..Default::default()
+                }
+            })
+            .collect(),
         raw_events,
         session_info,
         result_info,

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from './api/client'
-import type { AgentType, ParseResult } from './api/types'
+import type { AgentType, LiveAgent, ParseResult } from './api/types'
 
 
 // ── 实时监控（SSE 为主，轮询降级）────────────────────────────
@@ -11,7 +11,7 @@ import type { AgentType, ParseResult } from './api/types'
 export type LiveStatus = 'idle' | 'loading' | 'live' | 'polling' | 'error'
 
 /// 支持实时监控的 agent 类型（claude_code transcript / opencode ndjson）。
-export type LiveAgent = 'claude_code' | 'opencode'
+export type { LiveAgent } from './api/types'
 
 export interface LiveStreamState {
   rawEvents: unknown[]
@@ -302,7 +302,7 @@ export function useEmbedded(sessionId: string | null, agentType: string | null) 
   })
 }
 
-export function useTraces(root: string | undefined, agent?: 'claude_code' | 'opencode') {
+export function useTraces(root: string | undefined, agent?: LiveAgent) {
   return useQuery({
     queryKey: ['traces', root ?? '', agent ?? ''],
     queryFn: () => api.traces(root, agent),
@@ -310,7 +310,7 @@ export function useTraces(root: string | undefined, agent?: 'claude_code' | 'ope
 }
 
 /// 单个 trace 文件的可读会话名（文件列表/会话下拉框展示用）。
-export function useTraceName(path: string | null, agent?: 'claude_code' | 'opencode') {
+export function useTraceName(path: string | null, agent?: LiveAgent) {
   return useQuery({
     queryKey: ['trace-name', path ?? '', agent ?? ''],
     queryFn: () => api.traceName(path!, agent),
@@ -320,7 +320,7 @@ export function useTraceName(path: string | null, agent?: 'claude_code' | 'openc
 }
 
 /// 单个 trace 文件的会话列表元数据（状态/时长/agent 数/目录）。
-export function useSessionMeta(path: string | null, agent?: 'claude_code' | 'opencode') {
+export function useSessionMeta(path: string | null, agent?: LiveAgent) {
   return useQuery({
     queryKey: ['session-meta', path ?? '', agent ?? ''],
     queryFn: () => api.sessionMeta(path!, agent),

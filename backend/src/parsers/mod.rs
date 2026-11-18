@@ -15,7 +15,11 @@ use crate::models::ParseResult;
 pub fn parse_for_agent_type(content: &[u8], agent_type: &str) -> Option<ParseResult> {
     match agent_type {
         "opencode" => Some(opencode::parse(content)),
-        "claude_code" => Some(claude_code::parse(content)),
+        "claude_code" | "codeagent" => {
+            let mut result = claude_code::parse(content);
+            result.source = agent_type.to_owned();
+            Some(result)
+        }
         "gemini" => Some(gemini::parse(content)),
         _ => None,
     }

@@ -1,50 +1,39 @@
-// Select + 2-column detail view for a single tool call (port of
-// `tool_inspector` in the legacy shared views).
-
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { ToolCall } from '../api/types'
+import type { CallFilter } from './SessionHeader'
 import { grouped } from '../derive'
 
-export default function ToolInspector({ tools }: { tools: ToolCall[] }) {
-  const [idx, setIdx] = useState(0)
-  if (tools.length === 0) return null
-  const selected = tools[Math.min(idx, tools.length - 1)]
-  const rawInput = selected.input
-
-  return (
-    <div>
-      <label className="text-input">
-        <span>选择一次工具调用进行深度审查：</span>
-        <select value={Math.min(idx, tools.length - 1)} onChange={(e) => setIdx(Number(e.target.value))}>
-          {tools.map((t, i) => (
-            <option key={i} value={i}>
-              [Turn {t.turn_no}] #{t.call_idx + 1}  {t.name}  |  {t.is_error ? '❌ 错误' : '✅'}  |{' '}
-              {grouped(t.tiktoken_tokens)} tokens
-            </option>
-          ))}
-        </select>
-      </label>
-      <div className="two-col">
-        <div>
-          <div className="banner banner-info">Turn: {selected.turn_no}</div>
-          <div className="banner banner-info">Tiktoken Tokens: {grouped(selected.tiktoken_tokens)}</div>
-          <div className="banner banner-info">输出大小: {grouped(selected.output_chars)} chars</div>
-          <div className="banner banner-info">是否错误: {selected.is_error ? '是 ❌' : '否 ✅'}</div>
-          {selected.duration_ms > 0 && (
-            <div className="banner banner-info">耗时: {selected.duration_ms.toFixed(0)} ms</div>
-          )}
-          {rawInput !== null && rawInput !== undefined && (
-            <>
-              <h4>入参（JSON）</h4>
-              <pre className="debug-json">{JSON.stringify(rawInput, null, 2)}</pre>
-            </>
-          )}
-        </div>
-        <div>
-          <h4>工具返回内容</h4>
-          <textarea className="tool-output" readOnly value={selected.output} rows={16} />
-        </div>
-      </div>
+export default function ToolInspector({ tools, filter, onFilter }: {
+  tools: ToolCall[]
+  filter: CallFilter
+  onFilter: (filter: CallFilter) => void
+}) {
+  const [selected, setSelected] = useState<ToolCall | null>(null)
+  const calls = useMemo(() => {
+    if (filter === 'failed') return tools.filter((call) => call.is_error)
+    if (filter === 'slowest') return [...tools].sort((a, b) => b.duration_ms - a.duration_ms)
+    return tools
+  }, [tools, filter])
+  const call = selected && calls.includes(selected) ? selected : calls[0]
+  return <section className="call-inspector">
+    <div className="index-heading"><h3>工具调用明细</h3>
+      <label>查看方式 <select className="pill-input" value={filter} onChange={(event) => { setSelected(null); onFilter(event.target.value as CallFilter) }}>
+        <option value="all">执行顺序</option><option value="slowest">耗时最长优先</option><option value="failed">仅失败调用</option>
+      </select></label>
     </div>
-  )
+    {call ? <div className="call-layout">
+      <div className="call-list" aria-label="工具调用列表">
+        {calls.map((t, i) => <button key={i} aria-pressed={t === call} onClick={() => setSelected(t)}>
+          <span><b>{t.name}</b><small>第 {t.turn_no} 轮 · 调用 #{t.call_idx + 1}{t.is_error && ' · 失败'}</small></span>
+          <code>{t.duration_ms > 0 ? grouped(t.duration_ms) + ' ms' : '—'}</code>
+        </button>)}
+      </div>
+      <article className="call-detail">
+        <h3>{call.name}</h3>
+        <p className="muted">{call.is_error ? '失败' : '完成'} · 第 {call.turn_no} 轮 · {grouped(call.tiktoken_tokens)} 输出 Tokens · {grouped(call.output_chars)} 字符</p>
+        <h4>输入参数</h4><pre>{call.input == null ? '未记录输入' : JSON.stringify(call.input, null, 2)}</pre>
+        <h4>返回结果</h4><pre>{call.output || '未记录输出'}</pre>
+      </article>
+    </div> : <p className="workspace-empty">{filter === 'failed' ? '这次会话没有失败调用。' : '这次会话没有工具调用。'}</p>}
+  </section>
 }

@@ -1,7 +1,7 @@
 // Client-side pure row-shaping over already-shipped data (the TS half of the
 // compute boundary: cumsums, diffs, groupbys, formatting).
 
-import type { ToolCall, Turn } from './api/types'
+import type { ToolCall } from './api/types'
 
 // ── Formatting ────────────────────────────────────────────────
 
@@ -22,103 +22,6 @@ export function fmtTok(n: number): string {
 
 export function grouped(n: number): string {
   return n.toLocaleString('en-US')
-}
-
-// ── Turn row shaping ──────────────────────────────────────────
-
-export interface TurnRow {
-  turn_no: number
-  /// Raw `input_tokens` from the trace, displayed exactly as recorded.
-  /// NOTE: some providers (deepseek-style billing) EXCLUDE cache reads from
-  /// this field — see `excludes_cache`.
-  input_tokens: number
-  output_tokens: number
-  cache_read: number
-  cache_creation: number
-  cache_read_cum: number
-  cache_creation_cum: number
-  reasoning_cum: number
-  /// `input_tokens.diff()` — first row is the row's own value (legacy
-  /// `token_delta_fig`, opencode) or 0 (legacy claude `fillna(0)`).
-  /// NOT clamped: negative values are context compaction releases.
-  input_delta: number
-  /// Cache hit rate. Denominator is the full prompt: `input_tokens` when the
-  /// provider includes cache reads in it, `input_tokens + cache_read` when it
-  /// doesn't — so the ratio never exceeds 100%.
-  cache_hit_rate: number
-  /// Per-session usage convention detected from the data.
-  excludes_cache: boolean
-}
-
-/// Detect the usage convention of a session:
-/// - Anthropic-style: `input_tokens` INCLUDES cache reads (cache_read ≤ input)
-/// - deepseek-style: `input_tokens` EXCLUDES cache reads (cache_read can be
-///   ≫ input_tokens — every call re-reads the full cached context)
-/// Heuristic: any turn with cache_read > input_tokens (both > 0) marks the
-/// excludes-cache convention. Under the includes-cache convention the
-/// inequality never holds, so this never false-positives there.
-export function usageExcludesCache(turns: Turn[]): boolean {
-  return turns.some((t) => t.cache_read > 0 && t.input_tokens > 0 && t.cache_read > t.input_tokens)
-}
-
-export function shapeTurns(turns: Turn[], opts?: { deltaFillZero?: boolean }): TurnRow[] {
-  const excludesCache = usageExcludesCache(turns)
-  // Full prompt size — only used as the hit-rate denominator.
-  const hitDenominator = (t: Turn) => t.input_tokens + (excludesCache ? t.cache_read : 0)
-  let cumCacheRead = 0
-  let cumCacheCreation = 0
-  let cumReasoning = 0
-  return turns.map((t, i) => {
-    cumCacheRead += t.cache_read
-    cumCacheCreation += t.cache_creation
-    cumReasoning += t.reasoning_tokens
-    const inputDelta =
-      i === 0
-        ? opts?.deltaFillZero
-          ? 0
-          : t.input_tokens
-        : t.input_tokens - turns[i - 1].input_tokens
-    const denom = hitDenominator(t)
-    return {
-      turn_no: t.turn_no,
-      input_tokens: t.input_tokens,
-      output_tokens: t.output_tokens,
-      cache_read: t.cache_read,
-      cache_creation: t.cache_creation,
-      cache_read_cum: cumCacheRead,
-      cache_creation_cum: cumCacheCreation,
-      reasoning_cum: cumReasoning,
-      input_delta: inputDelta,
-      cache_hit_rate: denom > 0 ? t.cache_read / denom : 0,
-      excludes_cache: excludesCache,
-    }
-  })
-}
-
-/// Port of claude_code `_merge_consecutive_turns_df`: consecutive turns with
-/// the SAME `input_tokens` merge into one data point (chained tool calls
-/// share the context window). Merged rows: output/tool_count sum, cache
-/// fields take the max, text_content concatenates. This is the legacy
-/// criterion — merging by model would collapse a whole single-model session
-/// into one row.
-export function mergeConsecutiveTurns(turns: Turn[]): Turn[] {
-  if (turns.length === 0) return []
-  const merged: Turn[] = []
-  for (const t of turns) {
-    const last = merged[merged.length - 1]
-    if (last && last.input_tokens === t.input_tokens) {
-      last.output_tokens += t.output_tokens
-      last.tool_count += t.tool_count
-      last.cache_read = Math.max(last.cache_read, t.cache_read)
-      last.cache_creation = Math.max(last.cache_creation, t.cache_creation)
-      if (t.text_content) {
-        last.text_content = [last.text_content, t.text_content].filter(Boolean).join('\n')
-      }
-    } else {
-      merged.push({ ...t })
-    }
-  }
-  return merged
 }
 
 // ── Tool row shaping ──────────────────────────────────────────
@@ -226,7 +129,7 @@ function tsOf(evt: Record<string, unknown>): number | null {
 }
 
 /// 提取 user 消息中的真实输入文本（tool_result 包装消息返回 ''）。
-function userInputText(content: unknown, n = 60): string {
+export function userInputText(content: unknown, n = 60): string {
   if (typeof content === 'string') return content.slice(0, n)
   if (Array.isArray(content)) {
     const parts: string[] = []
@@ -531,6 +434,42 @@ export function buildTimeline(rawEvents: unknown[]): TimelineModel {
 }
 
 
+type TraceEvent = Record<string, unknown>
+
+// Older loggers sometimes generated separate start/finish IDs. In that case
+// only match a unique start with the recorded step, tool and exact start time.
+export function opencodeToolPairs(rawEvents: unknown[]) {
+  const byId = new Map<string, TraceEvent>()
+  const byTime = new Map<string, TraceEvent | null>()
+  const pairs = new Map<TraceEvent, TraceEvent | undefined>()
+  const used = new Set<TraceEvent>()
+  for (const raw of rawEvents) {
+    const evt = raw as TraceEvent
+    const id = String(evt.toolCallId ?? '')
+    const keyAt = (ts: number) => JSON.stringify([evt.globalStep, evt.tool, ts])
+    if (evt.type === 'tool.start') {
+      if (id) byId.set(id, evt)
+      if (typeof evt.ts === 'number') {
+        const key = keyAt(evt.ts)
+        byTime.set(key, byTime.has(key) ? null : evt)
+      }
+    } else if (evt.type === 'tool.finish') {
+      const timed = typeof evt.ts === 'number' && typeof evt.duration === 'number'
+        ? byTime.get(keyAt(evt.ts - evt.duration)) : undefined
+      const start = byId.get(id) ?? timed
+      const match = start && !used.has(start) ? start : undefined
+      if (match) used.add(match)
+      pairs.set(evt, match)
+    }
+  }
+  return pairs
+}
+
+export function opencodeInspectedCalls(tools: ToolCall[], rawEvents: unknown[]): ToolCall[] {
+  const inputs = Array.from(opencodeToolPairs(rawEvents), ([finish, start]) => finish.args ?? start?.args)
+  return tools.map((tool) => ({ ...tool, input: inputs[tool.call_idx] }))
+}
+
 /// Opencode 时间轴提取（trace_logger.ts 生成的 ndjson）：
 /// 与 claude 同款三泳道模型——用户输入（text.user，插件当前版本不产生）、
 /// 模型文本输出（text.assistant）、工具调用+结果（tool.start↔tool.finish）。
@@ -538,29 +477,14 @@ export function buildTimeline(rawEvents: unknown[]): TimelineModel {
 /// step.finish。
 export function buildTimelineOpencode(rawEvents: unknown[]): TimelineModel {
   // ── Pass 1: 工具配对 + step token 索引 ──────────────────────
-  interface OcToolUse {
-    ts_ms: number
-    name: string
-    input: unknown
-  }
-  const toolStarts = new Map<string, OcToolUse>()
+  const pairs = opencodeToolPairs(rawEvents)
   const stepUsage = new Map<number, Record<string, number>>()
   const stepReason = new Map<number, string>()
 
   for (const raw of rawEvents) {
     const evt = raw as Record<string, unknown>
     const type = (evt.type as string) ?? ''
-    const tsMs = typeof evt.ts === 'number' ? evt.ts : null
-    if (type === 'tool.start') {
-      const id = String(evt.toolCallId ?? '')
-      if (id && tsMs !== null) {
-        toolStarts.set(id, {
-          ts_ms: tsMs,
-          name: String(evt.tool ?? 'tool'),
-          input: evt.args,
-        })
-      }
-    } else if (type === 'step.finish') {
+    if (type === 'step.finish') {
       const gs = Number(evt.globalStep ?? -1)
       const tokens = (evt.tokens ?? {}) as Record<string, number>
       if (gs >= 0) {
@@ -653,8 +577,8 @@ export function buildTimelineOpencode(rawEvents: unknown[]): TimelineModel {
     // 3. 工具调用+结果（合并一行）
     if (type === 'tool.finish') {
       const id = String(evt.toolCallId ?? '')
-      const start = toolStarts.get(id)
-      const startTs = start?.ts_ms ?? tsMs
+      const start = pairs.get(evt)
+      const startTs = typeof start?.ts === 'number' ? start.ts : tsMs
       const rawDur = evt.duration
       const duration =
         typeof rawDur === 'number' && rawDur > 0
@@ -666,16 +590,16 @@ export function buildTimelineOpencode(rawEvents: unknown[]): TimelineModel {
         kind: 'tool',
         turn_no: Number(evt.globalStep ?? currentStep),
         depth: 2,
-        name: String(evt.tool ?? start?.name ?? 'tool'),
+        name: String(evt.tool ?? start?.tool ?? 'tool'),
         status: evt.isError ? '❌' : '✅',
         duration_ms: duration,
         display_duration_ms: duration,
-        tool_name: String(evt.tool ?? start?.name ?? 'tool'),
+        tool_name: String(evt.tool ?? start?.tool ?? 'tool'),
         is_error: Boolean(evt.isError),
         detail: {
           evt,
           tool_id: id,
-          input: start?.input,
+          input: evt.args ?? start?.args,
           output: joinToolOutput(evt.output),
           is_error: Boolean(evt.isError),
           start: startTs,

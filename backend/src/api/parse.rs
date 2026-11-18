@@ -11,17 +11,15 @@ use crate::parsers;
 /// `~/.local/share/opencode/trace` — the opencode child-trace directory
 /// (resolved per call; no server state needed).
 pub fn opencode_trace_dir() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .unwrap_or_default();
     std::path::PathBuf::from(home).join(".local/share/opencode/trace")
 }
 
 fn parse_bytes(agent_type: &str, content: &[u8]) -> Result<ParseResult, ApiError> {
-    match agent_type {
-        "opencode" | "claude_code" | "gemini" => {
-            Ok(parsers::parse_for_agent_type(content, agent_type).expect("validated agent type"))
-        }
-        other => Err(ApiError::bad_request(format!("未知的 agent_type：{other}"))),
-    }
+    parsers::parse_for_agent_type(content, agent_type)
+        .ok_or_else(|| ApiError::bad_request(format!("未知的 agent_type：{agent_type}")))
 }
 
 /// POST /api/parse/{agent_type} — raw trace bytes body → ParseResult.

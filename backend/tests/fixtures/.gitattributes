@@ -1,0 +1,2 @@
+# Golden parser output includes the original text length.
+sample_gemini.log text eol=lf

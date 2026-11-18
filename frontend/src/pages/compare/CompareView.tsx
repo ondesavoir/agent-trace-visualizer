@@ -50,7 +50,7 @@ export default function CompareView() {
   return (
     <div className="page shell">
       <aside className="sidebar">
-        <Link className="btn" to="/">← 返回选择页</Link>
+        <Link className="btn" to="/">← 返回会话工作台</Link>
         <hr />
         <h3>📊 对比模式</h3>
         <p className="muted">加载两个相同任务的 trace 文件进行 A/B 对比</p>
@@ -60,6 +60,7 @@ export default function CompareView() {
           <select value={agentType} onChange={(e) => setAgentType(e.target.value as AgentType)}>
             <option value="opencode">Opencode (.ndjson)</option>
             <option value="claude_code">Claude Code (.jsonl / stream-json)</option>
+            <option value="codeagent">CodeAgent (.jsonl / stream-json)</option>
           </select>
         </label>
         <hr />
@@ -114,7 +115,7 @@ function Placeholder() {
         <div>
           <h3>使用方法</h3>
           <ol style={{ lineHeight: 1.9 }}>
-            <li>在左侧选择 <b>Agent 类型</b>（Opencode / Claude Code）</li>
+            <li>在左侧选择 <b>Agent 类型</b>（Opencode / Claude Code / CodeAgent）</li>
             <li>上传或输入两个 <b>相同任务</b> 的 trace 文件：
               <ul>
                 <li>🔴 <b>Baseline</b> — 未使用优化的原始 trace</li>

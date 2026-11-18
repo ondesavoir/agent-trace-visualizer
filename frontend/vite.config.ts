@@ -15,23 +15,4 @@ export default defineConfig({
       },
     },
   },
-  build: {
-    // Keep the heavy chart/diagram libraries out of the initial bundle.
-    rolldownOptions: {
-      output: {
-        manualChunks: (moduleId: string) => {
-          if (moduleId.includes('node_modules/plotly.js') || moduleId.includes('react-plotly.js')) {
-            return 'plotly'
-          }
-          if (moduleId.includes('node_modules/mermaid')) {
-            return 'mermaid'
-          }
-          if (moduleId.includes('node_modules/react') || moduleId.includes('node_modules/scheduler')) {
-            return 'react'
-          }
-          return null
-        },
-      },
-    },
-  },
 })

@@ -44,6 +44,8 @@ fn assert_parity(paths: &[&str], rust: &ParseResult, gold: &Value) {
     // Full structural comparison after removing tiktoken-dependent fields and
     // duration_ms (Python dataclasses keep ints as ints; Rust uses f64).
     let mut rust_v = g(rust);
+    // Per-response usage is new. The legacy fixtures cover all original fields.
+    rust_v.as_object_mut().unwrap().remove("token_usage");
     let mut gold_v = gold.clone();
     for p in [
         "tool_calls/tiktoken_tokens",

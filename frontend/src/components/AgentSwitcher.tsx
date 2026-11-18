@@ -5,6 +5,7 @@ import { Link, useLocation } from 'react-router-dom'
 
 const AGENTS = [
   { path: '/claude-code', label: 'Claude Code', icon: '🤖' },
+  { path: '/codeagent', label: 'CodeAgent', icon: '⌘' },
   { path: '/opencode', label: 'Opencode', icon: '⚡' },
   { path: '/gemini', label: 'Gemini', icon: '💎' },
 ] as const

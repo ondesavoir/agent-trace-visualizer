@@ -70,15 +70,28 @@ export interface ParseResult {
   session_info: SessionInfo
   result_info: ResultInfo
   turns: Turn[]
+  token_usage?: TokenUsagePoint[]
   tool_calls: ToolCall[]
   parse_errors: number
   parse_debug: Record<string, unknown>
   subagents: Record<string, unknown>[]
 }
 
+export interface TokenUsagePoint {
+  model: string | null
+  input: number | null
+  output: number | null
+  cache_read: number | null
+  cache_write: number | null
+  reasoning: number | null
+  records: number
+  message_id: string | null
+}
+
 // ── API endpoints ─────────────────────────────────────────────
 
-export type AgentType = 'opencode' | 'claude_code' | 'gemini'
+export type LiveAgent = 'opencode' | 'claude_code' | 'codeagent'
+export type AgentType = LiveAgent | 'gemini'
 
 export interface EmbeddedResponse {
   status: 'ok' | 'locator_missing' | 'agent_mismatch' | 'trace_missing' | 'parse_empty' | 'unsupported_agent'
@@ -97,7 +110,7 @@ export interface TraceEntry {
   /// 会话运行时长（毫秒）
   durationMs?: number | null
   /// 所属 agent（trajectory 聚合接口返回；单 agent 列表无此字段）
-  agent?: string
+  agent?: LiveAgent
 }
 
 export interface MermaidResponse {

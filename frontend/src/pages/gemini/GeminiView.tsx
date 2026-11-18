@@ -6,6 +6,9 @@ import { Link } from 'react-router-dom'
 import type { ParseResult } from '../../api/types'
 import { useMermaid, useParse } from '../../hooks'
 import AgentSwitcher from '../../components/AgentSwitcher'
+import SessionHeader, { type CallFilter } from '../../components/SessionHeader'
+import ToolInspector from '../../components/ToolInspector'
+import ReplayView from '../../components/ReplayView'
 import Plot from '../../components/Plot'
 import MermaidView from '../../components/MermaidView'
 import { Tabs, DataTable, DebugJson, Expander, ErrorBanner, FileUpload, Info } from '../../components/ui/primitives'
@@ -16,6 +19,8 @@ const PLOT_LIMIT = 5000
 
 const TABS = [
   { key: 'overview', label: '总览' },
+  { key: 'replay', label: '会话回放' },
+  { key: 'calls', label: '调用明细' },
   { key: 'timeline', label: '时间线' },
   { key: 'sequence', label: '时序图' },
   { key: 'tools', label: '工具调用' },
@@ -60,7 +65,7 @@ export default function GeminiView() {
       <aside className="sidebar">
         {/* 上半部：页面内容（可滚动） */}
         <div className="sidebar-main">
-          <Link className="btn" to="/">← 返回选择页</Link>
+          <Link className="btn" to="/">← 返回会话工作台</Link>
           <hr />
           <h3>Gemini CLI</h3>
           <FileUpload
@@ -75,25 +80,22 @@ export default function GeminiView() {
           <p className="muted">
             GEMINI_TELEMETRY_TRACES_ENABLED 生成的 telemetry.log（拼接 JSON 对象格式）
           </p>
-          <hr />
-          <Link className="btn" style={{ width: '100%', textAlign: 'center' }} to="/trajectory">
-            📊 Trajectory 数据搜集
-          </Link>
         </div>
         {/* 下半部：agent 切换（常驻底部） */}
         <AgentSwitcher />
       </aside>
       <div className="main" id="main">
         {isLoading && <p className="muted">解析中…</p>}
-        {data && <GeminiBody result={data as ParseResult} />}
+        {data && <GeminiBody result={data as ParseResult} fileName={name} />}
         {!content && <p className="muted">请先上传 telemetry.log。</p>}
       </div>
     </div>
   )
 }
 
-function GeminiBody({ result }: { result: ParseResult }) {
+export function GeminiBody({ result, fileName }: { result: ParseResult; fileName?: string }) {
   const [tab, setTab] = useState('overview')
+  const [callFilter, setCallFilter] = useState<CallFilter>('all')
   const events = result.raw_events as GemEvent[]
   const mermaid = useMermaid({ kind: 'sequence-gemini', rawEvents: result.raw_events, maxEvents: 60, seed: 42 })
 
@@ -127,14 +129,16 @@ function GeminiBody({ result }: { result: ParseResult }) {
   }, [events])
 
   return (
-    <div className="page" style={{ padding: 0 }}>
-      <h2>Gemini CLI 可视化</h2>
+    <div className="session-detail">
+      <SessionHeader result={result} fileName={fileName} onInspect={(filter) => { setCallFilter(filter); setTab('calls') }} />
 
-      <Expander title={`🔧 解析调试面板（chunks=${String(result.parse_debug.chunks_found ?? 0)} rows_ok=${String(result.parse_debug.rows_ok ?? 0)} rows_err=${String(result.parse_debug.rows_err ?? 0)}）`}>
+      {tab === 'raw' && <Expander title="解析调试面板">
         <DebugJson value={result.parse_debug} />
-      </Expander>
+      </Expander>}
 
       <Tabs items={TABS} active={tab} onChange={setTab} />
+      {tab === 'replay' && <ReplayView agent="gemini" rawEvents={events} />}
+      {tab === 'calls' && <ToolInspector key={callFilter} tools={result.tool_calls} filter={callFilter} onFilter={setCallFilter} />}
 
       {tab === 'overview' && <OverviewTab stats={stats} events={events} />}
 

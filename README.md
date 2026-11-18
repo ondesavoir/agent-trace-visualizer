@@ -29,6 +29,7 @@ does only pure row-shaping (cumsums, groupbys, pagination, formatting).
 | ------------- | ------------------------------------------------------------ |
 | `opencode`    | `~/.local/share/opencode/trace/<session-id>.ndjson`          |
 | `claude_code` | `~/.claude/projects/<project-hash>/<session-id>.jsonl` or `-p --output-format stream-json` (auto-detected) |
+| `codeagent`   | CodeAgent sessions in `~/.cac/projects`. Uses the Claude Code transcript and stream-json parser. |
 | `gemini`      | Gemini CLI telemetry log (standalone only)                   |
 
 ## Running

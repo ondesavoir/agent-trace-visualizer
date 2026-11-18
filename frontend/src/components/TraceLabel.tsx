@@ -12,7 +12,7 @@ export function shortTraceLabel(path: string): string {
 
 /// 文件名去掉扩展名后的短 ID（claude 是 uuid，opencode 是 ses_xxx）。
 export function shortTraceId(path: string): string {
-  const base = path.split('/').pop() ?? path
+  const base = path.replaceAll('\\', '/').split('/').pop() ?? path
   const stem = base.replace(/\.(jsonl|ndjson)$/, '')
   return stem.length > 13 ? `${stem.slice(0, 13)}…` : stem
 }

@@ -6,7 +6,7 @@
 //! - `GET /api/live/latest`：返回 ~/.claude/projects 下 mtime 最新且 5 分钟
 //!   内活跃的 transcript 路径（支撑前端"一键监控当前会话"）。
 //!
-//! 信任边界与既有端点一致：path 仅允许 ~/.claude/projects 下的 *.jsonl。
+//! 允许的会话目录与扩展名见 allowed_live_path。
 
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
@@ -20,23 +20,15 @@ use serde_json::json;
 
 use crate::api::errors::ApiError;
 use crate::util::LineReader;
+use super::traces::{LOCAL_AGENTS, trace_root};
 
 /// 5 分钟内活跃视为"正在进行的会话"。
 const ACTIVE_WINDOW: Duration = Duration::from_secs(300);
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-fn projects_root() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home).join(".claude/projects")
-}
-
-fn opencode_trace_root() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home).join(".local/share/opencode/trace")
-}
-
 /// path 必须落在允许的 trace 目录下且扩展名匹配（信任边界）：
 /// - Claude Code：~/.claude/projects 下的 *.jsonl
+/// - CodeAgent：~/.cac/projects 下的 *.jsonl
 /// - Opencode：~/.local/share/opencode/trace 下的 *.ndjson
 pub(crate) fn allowed_live_path(path: &str) -> bool {
     let Ok(p) = std::fs::canonicalize(path) else {
@@ -45,7 +37,9 @@ pub(crate) fn allowed_live_path(path: &str) -> bool {
     let Some(ext) = p.extension().and_then(|e| e.to_str()) else {
         return false;
     };
-    for (root, want_ext) in [(projects_root(), "jsonl"), (opencode_trace_root(), "ndjson")] {
+    for agent in LOCAL_AGENTS {
+        let root = trace_root(agent);
+        let want_ext = if agent == "opencode" { "ndjson" } else { "jsonl" };
         if ext == want_ext && std::fs::canonicalize(&root).map(|r| p.starts_with(&r)).unwrap_or(false)
         {
             return true;
@@ -67,7 +61,7 @@ pub async fn live_handler(
     let path = PathBuf::from(&q.path);
     if !allowed_live_path(&q.path) {
         return Err(ApiError::bad_request(
-            "仅允许监控 ~/.claude/projects 下的 transcript jsonl 文件",
+            "仅允许监控已配置的会话目录下对应格式的日志文件",
         ));
     }
     if !path.is_file() {
@@ -134,27 +128,18 @@ pub struct LiveLatest {
 
 #[derive(Deserialize)]
 pub struct LiveLatestQuery {
-    /// claude_code（默认）| opencode
+    /// claude_code（默认）| codeagent | opencode
     pub agent: Option<String>,
 }
 
 pub async fn live_latest_handler(
     Query(q): Query<LiveLatestQuery>,
 ) -> Result<Json<LiveLatest>, ApiError> {
-    let is_opencode = q.agent.as_deref() == Some("opencode");
-    let root = if is_opencode {
-        opencode_trace_root()
-    } else {
-        projects_root()
-    };
-    let want_ext = if is_opencode { "ndjson" } else { "jsonl" };
-    let root_label = if is_opencode {
-        "~/.local/share/opencode/trace 不存在"
-    } else {
-        "~/.claude/projects 不存在"
-    };
+    let agent = q.agent.as_deref().unwrap_or("claude_code");
+    let root = trace_root(agent);
+    let want_ext = if agent == "opencode" { "ndjson" } else { "jsonl" };
     if !root.is_dir() {
-        return Err(ApiError::not_found(root_label));
+        return Err(ApiError::not_found(format!("会话目录不存在：{}", root.display())));
     }
 
     let mut best: Option<(u64, PathBuf)> = None;

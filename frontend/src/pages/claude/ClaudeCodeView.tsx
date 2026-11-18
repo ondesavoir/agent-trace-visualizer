@@ -1,5 +1,5 @@
 // Claude Code standalone page — 两种模式：
-// - 实时监控（默认）：自动定位并跟随 ~/.claude/projects 下最新的活跃会话
+// - 实时监控（默认）：自动定位并跟随对应会话目录 下最新的活跃会话
 // - 文件模式：事后分析，文件选择面板位于主区域（左侧栏不再显示文件列表）
 
 import { useEffect, useMemo, useState } from 'react'
@@ -10,14 +10,16 @@ import LiveMonitor from '../../components/LiveMonitor'
 import SessionTable from '../../components/SessionTable'
 import AgentSwitcher from '../../components/AgentSwitcher'
 import { FileUpload, ErrorBanner, Info } from '../../components/ui/primitives'
-import type { AgentType, ParseResult, TraceEntry } from '../../api/types'
+import type { ParseResult, TraceEntry } from '../../api/types'
 import ClaudeBody from './ClaudeBody'
 import { useQuery } from '@tanstack/react-query'
 
 type PageMode = 'live' | 'file'
 type LoadMode = 'browse' | 'upload'
 
-export default function ClaudeCodeView() {
+export default function ClaudeCodeView({ agent = 'claude_code' }: { agent?: 'claude_code' | 'codeagent' }) {
+  const agentName = agent === 'codeagent' ? 'CodeAgent' : 'Claude Code'
+  const directory = agent === 'codeagent' ? '~/.cac/projects' : '~/.claude/projects'
   const [pageMode, setPageMode] = useState<PageMode>('live')
   const [loadMode, setLoadMode] = useState<LoadMode>('browse')
   const [content, setContent] = useState<ArrayBuffer | null>(null)
@@ -28,7 +30,7 @@ export default function ClaudeCodeView() {
 
   const startLive = async () => {
     try {
-      const latest = await api.liveLatest()
+      const latest = await api.liveLatest(agent)
       setLiveError(null)
       setLivePath(latest.path)
     } catch (e) {
@@ -42,13 +44,13 @@ export default function ClaudeCodeView() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pageMode])
 
-  const traces = useTraces(undefined)
+  const traces = useTraces(undefined, agent)
   const pathResult = useQuery({
-    queryKey: ['parse-from-path', selectedPath],
-    queryFn: () => api.parseFromPath('claude_code' as AgentType, selectedPath!),
+    queryKey: ['parse-from-path', agent, selectedPath],
+    queryFn: () => api.parseFromPath(agent, selectedPath!),
     enabled: !!selectedPath,
   })
-  const uploadResult = useParse('claude_code' as AgentType, content, name)
+  const uploadResult = useParse(agent, content, name)
 
   const result: ParseResult | undefined =
     loadMode === 'browse' ? pathResult.data : uploadResult.data
@@ -75,9 +77,9 @@ export default function ClaudeCodeView() {
       <aside className="sidebar">
         {/* 上半部：Live / 会话列表模式切换 + 说明（内容可滚动） */}
         <div className="sidebar-main">
-          <Link className="btn" to="/">← 返回选择页</Link>
+          <Link className="btn" to="/">← 返回会话工作台</Link>
           <hr />
-          <h3>Claude Code</h3>
+          <h3>{agentName}</h3>
           {/* 模式切换：默认实时监控 */}
           <button
             className={`btn ${pageMode === 'live' ? 'btn-primary' : ''}`}
@@ -97,7 +99,7 @@ export default function ClaudeCodeView() {
           {pageMode === 'live' ? (
             <>
               <p className="muted">
-                监控当前正在进行的会话（自动定位 ~/.claude/projects 下最近活跃的 transcript）。
+                监控当前正在进行的会话（自动定位 {directory} 下最近活跃的 transcript）。
               </p>
               {liveError && <p className="muted" style={{ color: '#991b1b' }}>{liveError}</p>}
             </>
@@ -105,10 +107,6 @@ export default function ClaudeCodeView() {
             <p className="muted">加载本地 trace 文件进行事后分析，文件选择在主区域。</p>
           )}
           {error && pageMode === 'file' && <ErrorBanner>{String(error)}</ErrorBanner>}
-          <hr />
-          <Link className="btn" style={{ width: '100%', textAlign: 'center' }} to="/trajectory">
-            📊 Trajectory 数据搜集
-          </Link>
         </div>
         {/* 下半部：agent 切换（常驻底部） */}
         <AgentSwitcher />
@@ -116,12 +114,12 @@ export default function ClaudeCodeView() {
       <div className="main" id="main">
         {pageMode === 'live' ? (
           livePath ? (
-            <LiveMonitor path={livePath} agent="claude_code" onExit={enterFile} />
+            <LiveMonitor path={livePath} agent={agent} onExit={enterFile} />
           ) : liveError ? (
             <div>
-              <Info>未找到正在进行的会话（~/.claude/projects 下没有最近活跃的 transcript）。</Info>
+              <Info>未找到正在进行的会话（{directory} 下没有最近活跃的 transcript）。</Info>
               <p className="muted">
-                可以先切换到「📁 会话列表」查看历史记录；或先启动一个 Claude Code 会话后再重试。
+                可以先切换到「📁 会话列表」查看历史记录；或先启动一个 {agentName} 会话后再重试。
               </p>
               <button className="btn" onClick={startLive}>🔄 重新定位</button>
             </div>
@@ -152,11 +150,11 @@ export default function ClaudeCodeView() {
             ) : (
               // 会话列表面板（主区域）：点击行加载该会话详情
               <div className="file-panel">
-                <p className="muted">扫描 ~/.claude/projects 下的 transcript JSONL（按修改时间倒序）</p>
+                <p className="muted">扫描 {directory} 下的 transcript JSONL（按修改时间倒序）</p>
                 {traces.isLoading && <p className="muted">扫描中…</p>}
                 {!traces.isLoading && (
                   <SessionTable
-                    agent="claude_code"
+                    agent={agent}
                     traces={sorted.slice(0, 200)}
                     selected={selectedPath}
                     onSelect={(p) => {
@@ -179,10 +177,12 @@ export default function ClaudeCodeView() {
                       }}
                     />
                     {name && <p className="muted">已加载：{name}</p>}
+                    {agent === 'claude_code' && <>
                     <p className="muted" style={{ marginTop: 10 }}>
                       快速生成 stream-json：
                     </p>
                     <pre className="debug-json">{'claude --output-format stream-json \\\n  -p "你的任务描述" \\\n  > claude_trace.ndjson'}</pre>
+                    </>}
                   </div>
                 </details>
               </div>

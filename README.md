@@ -34,6 +34,30 @@ does only pure row-shaping (cumsums, groupbys, pagination, formatting).
 
 ## Running
 
+### Desktop app
+
+The desktop executable contains the React frontend and the Rust API. It opens its own
+window and uses an automatically assigned loopback port. Closing the window exits the app.
+The Windows build uses the Microsoft Edge WebView2 Runtime, macOS uses system WebKit,
+and Ubuntu 24.04 needs the runtime package `libwebkit2gtk-4.1-0`.
+
+The **Build desktop apps** GitHub Actions workflow produces Windows x64, Ubuntu 24.04
+x64, and Intel and Apple Silicon macOS artifacts. Run it manually or push a `v*` tag,
+then download the artifact for your platform from the workflow run.
+
+To build for your current machine (on Ubuntu install `libwebkit2gtk-4.1-dev`
+and `libxdo-dev` first):
+
+```sh
+cd frontend
+npm ci
+npm run build
+cd ../backend
+cargo build --release --locked --features standalone
+```
+
+Launch `backend/target/release/trace-viz-backend` (`.exe` on Windows).
+
 ### Production (backend serves the built frontend)
 
 ```bash

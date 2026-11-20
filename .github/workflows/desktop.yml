@@ -1,0 +1,67 @@
+name: Build desktop apps
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-24.04, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libxdo-dev
+      - run: npm ci && npm run build
+        working-directory: frontend
+        shell: bash
+      - name: Compile desktop executable
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          cargo build --locked --release --features standalone --manifest-path "$GITHUB_WORKSPACE/backend/Cargo.toml"
+      - name: Package executable
+        shell: bash
+        run: |
+          mkdir package
+          case "$RUNNER_OS" in
+            Windows) cp backend/target/release/trace-viz-backend.exe package/AgentTraceVisualizer-windows-x64.exe ;;
+            Linux) cp backend/target/release/trace-viz-backend agent-trace-visualizer
+                   tar czf package/agent-trace-visualizer-ubuntu-24.04-x64.tar.gz agent-trace-visualizer ;;
+            macOS) app="Agent Trace Visualizer.app"
+                   mkdir -p "$app/Contents/MacOS"
+                   cp backend/target/release/trace-viz-backend "$app/Contents/MacOS/agent-trace-visualizer"
+                   cp scripts/desktop-Info.plist "$app/Contents/Info.plist"
+                   codesign --force --sign - "$app"
+                   ditto -c -k --keepParent "$app" "package/agent-trace-visualizer-macos-$(uname -m).zip" ;;
+          esac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-trace-visualizer-${{ matrix.os }}-${{ runner.arch }}
+          path: package/
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: agent-trace-visualizer-*
+          merge-multiple: true
+          path: packages
+      - name: Publish desktop release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" packages/* --verify-tag --repo "$GITHUB_REPOSITORY" \
+            --title "Agent Trace Visualizer $GITHUB_REF_NAME" \
+            --notes "Standalone desktop application for Windows x64, Ubuntu 24.04 x64, and macOS (Apple Silicon and Intel). The frontend and backend run together in a native application window. Windows requires the WebView2 Runtime. Ubuntu requires libwebkit2gtk-4.1-0."
